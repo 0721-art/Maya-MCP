@@ -14,7 +14,7 @@ HONOR 遥控器只是 `examples/honor_remote/` 中的示例；真正的作业通
 - [dcc-mcp/dcc-mcp-maya](https://github.com/dcc-mcp/dcc-mcp-maya)：大量可发现工具、UV/烘焙专题、Maya 2022/Python 3.7 兼容提示。
 - [chadrik/maya-mcp-server](https://github.com/chadrik/maya-mcp-server)：`commandPort`、多会话资源。
 
-本仓库没有直接复制这些项目。当前实现使用**本地回环 TCP + token 的 JSON 桥接**，同时支持 Maya GUI 和 `mayapy` headless；它与 `commandPort` 的目标相同（在 Maya 与 Agent 之间传命令），但协议独立，详见 [Maya 参考调研](docs/MAYA_REFERENCES.md) 和 [架构](#架构)。
+本仓库没有直接复制这些项目。当前实现支持两种传输：默认的**本地回环 TCP + token 的 JSON 桥接**，以及 Maya 原生 `commandPort`（`MAYA_MCP_MODE=commandport`）；同时支持 Maya GUI 和 `mayapy` headless。`commandPort` 模式不需要在 Maya 侧安装 Python 包，详见 [Maya 参考调研](docs/MAYA_REFERENCES.md) 和 [架构](#架构)。
 
 ## 特性
 
@@ -38,8 +38,8 @@ Agent / MCP client
         │  MCP stdio (JSON-RPC)
         ▼
 maya_mcp.server (宿主 Python 3.11+)
-        │  token-protected TCP JSON
-        ├──────────────► Maya GUI：Script Editor 里启动的 bridge
+        │  token-protected TCP JSON / commandPort
+        ├──────────────► Maya GUI：Script Editor 里启动的 bridge 或原生 commandPort
         └──────────────► mayapy headless：worker 进程
                               │
                               ▼
@@ -48,7 +48,8 @@ maya_mcp.server (宿主 Python 3.11+)
 
 - **GUI 模式**：Maya 处于打开状态，操作会出现在当前场景/Outliner 中，适合人工检查、建模作业和截图。
 - **headless 模式**：`MayaSession` 发现 `mayapy` 后启动 `python -m maya_mcp.worker`，适合自动测试、批量生成和 CI。
-- 服务默认 `MAYA_MCP_MODE=auto`：先探测已有 bridge；没有则启动 headless worker。要用 GUI，请把模式设为 `gui` 并在 Maya 内启动 bridge。
+- **commandPort 模式**：连接 Maya 自带的 `cmds.commandPort` socket，不在 Maya 侧安装任何包，也不会启动 worker。
+- 服务默认 `MAYA_MCP_MODE=auto`：先探测已有 bridge；没有则启动 headless worker。要用 GUI，请把模式设为 `gui` 并在 Maya 内启动 bridge；要用原生 commandPort，请设为 `commandport`。
 
 ## 环境要求
 
@@ -123,6 +124,32 @@ $env:MAYA_MCP_PORT = "9876"
 
 GUI bridge 默认监听 `127.0.0.1:9876`。如果端口被占用，修改 `MAYA_MCP_PORT` 并保持服务端一致。
 
+### 4. Maya 原生 commandPort（可选，零 Maya 侧安装）
+
+在 Maya 的 Script Editor 中执行（端口和 token 要与 MCP 服务端一致）：
+
+```python
+import os
+import sys
+
+os.environ["MAYA_MCP_COMMAND_TOKEN"] = "replace-with-a-long-random-token"
+sys.path.insert(0, r"D:\Maya-MCP")
+
+from maya import cmds
+cmds.commandPort(name="127.0.0.1:9876", sourceType="python")
+```
+
+MCP 服务侧：
+
+```powershell
+$env:MAYA_MCP_MODE = "commandport"
+$env:MAYA_MCP_TOKEN = "replace-with-a-long-random-token"
+$env:MAYA_MCP_COMMAND_PORT = "9876"
+.\\.venv\\Scripts\\python.exe -m maya_mcp.server
+```
+
+commandPort 模式直接复用现有工具层；不会启动 `mayapy` worker。当前只支持显式端口，尚未做多实例自动发现。
+
 ## MCP 客户端配置
 
 通用 stdio 配置示例（把路径替换为你的实际路径）：
@@ -154,9 +181,11 @@ GUI bridge 默认监听 `127.0.0.1:9876`。如果端口被占用，修改 `MAYA_
 | `MAYA_MCP_MAYAPY` | 自动发现 | 指定 `mayapy.exe`，优先于版本扫描 |
 | `MAYA_MCP_VERSION` | 自动 | `2022`–`2026`；指定后只接受该版本 |
 | `MAYA_MCP_INSTALL_ROOTS` | 系统默认 | 额外的 Maya 安装根目录，多个用 `;` 分隔 |
-| `MAYA_MCP_MODE` | `auto` | `auto` / `gui` / `headless` |
-| `MAYA_MCP_PORT` | `9876` | bridge 端口；只允许回环地址 |
-| `MAYA_MCP_TOKEN` | 空 | GUI 模式必须显式设置；headless 会自动生成 |
+| `MAYA_MCP_MODE` | `auto` | `auto` / `gui` / `headless` / `commandport` |
+| `MAYA_MCP_PORT` | `9876` | GUI/headless bridge 端口；只允许回环地址 |
+| `MAYA_MCP_COMMAND_PORT` | `9876` | `commandport` 模式使用的 Maya `commandPort` 端口 |
+| `MAYA_MCP_TOKEN` | 空 | GUI/commandport 模式必须显式设置；headless 会自动生成 |
+| `MAYA_MCP_COMMAND_TOKEN` | 空 | Maya 进程内的 commandPort 校验 token；设置后必须与服务端 `MAYA_MCP_TOKEN` 一致 |
 | `MAYA_MCP_TIMEOUT` | `60` | 普通命令超时（秒） |
 | `MAYA_MCP_RENDER_TIMEOUT` | `600` | 渲染/烘焙等长任务超时（秒） |
 | `MAYA_MCP_ALLOW_CODE` | `0` | 是否允许受限的 `execute_maya_code` |
@@ -284,7 +313,7 @@ cd D:\Maya-MCP
 
 ## 已知限制
 
-1. **GUI bridge 需要手动启动**：当前不是 `commandPort` 的零配置模式；需要在 Maya Script Editor 执行 `start_gui()`，并设置相同 token。`commandPort` 适配是后续工作（见 [参考调研](docs/MAYA_REFERENCES.md)）。
+1. **GUI bridge / commandPort 需要手动开启**：GUI 模式需在 Maya Script Editor 执行 `start_gui()`；commandPort 模式需执行 `cmds.commandPort(...)` 并匹配 token。当前未做自动端口发现和多实例选择。
 2. **只有 Maya 2026 实测**；2022–2025 仍需目标机验证。
 3. **Arnold**：`bake_arnold_texture` 依赖 Arnold/MtoA 和有效许可；无许可时使用 native `bake_map`，并接受其质量/功能差异。
 4. **headless 截图**：`capture_viewport` 在 standalone 下回退为 Maya Software render，结果标记为 `fallback`；GUI 模式才是真实 viewport。
@@ -300,6 +329,7 @@ maya_mcp/
   bridge.py          Maya 内 TCP JSON bridge
   capabilities.py    Maya 版本/插件能力探测
   client.py          bridge 客户端
+  commandport.py     Maya 原生 commandPort 传输
   composition.py     多图拼版
   config.py          环境变量和 Settings
   envelope.py        统一返回结构
@@ -330,4 +360,4 @@ docs/
 
 ## 状态
 
-核心功能已完成到可运行、可 smoke 的阶段：44 个工具、Maya 2026 真实执行、6 个单元测试通过、完整 smoke 通过。下一步是把 Maya 2022–2025 的目标机 smoke 补齐，并评估 `commandPort` 适配；在此之前，README 不把“多版本发现”写成“多版本已实测”。
+核心功能已完成到可运行、可 smoke 的阶段：44 个工具、Maya 2026 真实执行、12 个单元测试通过、完整 smoke 通过。`commandPort` 传输已实现并通过单元测试；下一步是把 Maya 2022–2025 的目标机 smoke 补齐，并做 commandPort 的多实例发现；在此之前，README 不把“多版本发现”写成“多版本已实测”。

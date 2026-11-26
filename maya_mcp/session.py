@@ -7,6 +7,7 @@ from pathlib import Path
 from threading import RLock
 
 from .client import BridgeClient, BridgeError
+from .commandport import CommandPortClient
 from .config import maya_environment
 from .versions import version_from_path
 
@@ -16,7 +17,9 @@ logger = logging.getLogger(__name__)
 class MayaSession:
     def __init__(self, settings):
         self.settings = settings
-        self.client = BridgeClient(settings.host, settings.port, settings.token)
+        self.client = (CommandPortClient(settings.host, settings.port, settings.token, settings.root)
+                       if settings.mode == "commandport"
+                       else BridgeClient(settings.host, settings.port, settings.token))
         self.worker = None
         self.startup = RLock()
         self.ready = False
@@ -24,7 +27,7 @@ class MayaSession:
 
     def _probe(self, timeout):
         info = self.client.call("get_maya_info", timeout=timeout)
-        expected = self.settings.mode
+        expected = "gui" if self.settings.mode == "commandport" else self.settings.mode
         if expected != "auto" and info.get("mode") != expected:
             raise BridgeError("configuration", f"Connected bridge mode is {info.get('mode')}, expected {expected}")
         if self.settings.version and version_from_path(info.get("version")) != self.settings.version:
@@ -36,6 +39,10 @@ class MayaSession:
             if self.closed:
                 raise BridgeError("connection", "Maya MCP session is shutting down")
             if self.ready and (self.worker is None or self.worker.poll() is None):
+                return
+            if self.settings.mode == "commandport":
+                self._probe(2)
+                self.ready = True
                 return
             try:
                 self._probe(2)
@@ -50,6 +57,8 @@ class MayaSession:
 
     def _start_worker(self):
         s = self.settings
+        if s.mode == "commandport":
+            raise BridgeError("configuration", "commandport mode never starts a mayapy worker")
         if s.mayapy is None or not s.mayapy.is_file():
             raise BridgeError("configuration", "No matching mayapy executable. Set MAYA_MCP_MAYAPY or MAYA_MCP_INSTALL_ROOTS.")
         self.client.token = s.token or secrets.token_urlsafe(32)

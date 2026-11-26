@@ -24,10 +24,11 @@ Blender 的 MCP 桥接通常依赖 Blender 内置 Python 和 add-on；Maya 的�
 
 ## 本项目的选择
 
-当前仓库采用**本地回环 TCP + token 的 JSON bridge**：
+当前仓库默认采用**本地回环 TCP + token 的 JSON bridge**，并新增了 Maya 原生 `commandPort` transport：
 
 ```text
 MCP server ── token TCP JSON ──► Maya GUI bridge / mayapy headless worker
+MCP server ── commandPort ────► Maya GUI（无 Maya 侧包安装）
 ```
 
 原因：
@@ -35,22 +36,22 @@ MCP server ── token TCP JSON ──► Maya GUI bridge / mayapy headless wor
 - 同一套协议可以同时服务 GUI 和 headless；
 - 每个请求有明确的 token、超时、错误 envelope，job 可轮询；
 - 服务端进程不需要 import Maya，便于在普通 Python 3.11 环境运行；
-- 路径策略、命令并发和错误分类更容易统一测试。
+- 路径策略、命令并发和错误分类更容易统一测试；
+- `commandport` 模式复用同一工具层，零 Maya 侧包安装，适合已经打开 commandPort 的 Maya。
 
 代价：
 
 - GUI 模式需要在 Maya Script Editor 里运行 `maya_mcp.bridge.start_gui()`；
-- 不是 `commandPort` 的“零 Maya 侧配置”；
+- `commandPort` 模式也需要显式开启 `cmds.commandPort(...)`，并设置匹配的 token；
 - Maya 2022 的 Python 3.7 兼容性需要在目标机补 smoke；
-- 当前没有自动发现多个 GUI Maya 实例；headless 由 server 启动一个 worker。
+- 当前没有自动发现多个 GUI Maya 实例；commandPort 也只支持显式端口，headless 由 server 启动一个 worker。
 
 ## 后续可做的适配
 
-1. 增加 `commandPort` transport：保留现有工具层，把 `BridgeClient` 换成 `commandPort` 客户端，支持 `cmds.commandPort` 的 `-n`/`-src` 语义。
-2. 多实例发现：扫描本地端口/进程，把 `session_id` 暴露给 MCP 客户端。
-3. Maya 2022–2025 目标机 smoke：至少验证 Python 3.7 语法、`polyRetopo`/`surfaceSampler`/Arnold 差异。
-4. 把当前 GUI 启动步骤封装成 Maya shelf 按钮或 `.mod` 插件，但不能假装它已经是零配置。
+1. 多实例发现：扫描本地端口/进程，把 `session_id` 暴露给 MCP 客户端。
+2. Maya 2022–2025 目标机 smoke：至少验证 Python 3.7 语法、`polyRetopo`/`surfaceSampler`/Arnold 差异。
+3. 把当前 GUI 启动步骤封装成 Maya shelf 按钮或 `.mod` 插件，但不能假装它已经是零配置。
 
 ## 结论
 
-本项目借鉴了 `commandPort` 项目的工具分类、Maya 侧隔离、UV/烘焙专题和类型化工具思路，但保留了自有 bridge，以便先把真实 Maya 执行、作业配置和验收闭环跑通。README 的“已知限制”明确记录了这个取舍。
+本项目借鉴了 `commandPort` 项目的工具分类、Maya 侧隔离、UV/烘焙专题和类型化工具思路，同时保留自有 bridge 作为默认传输，并实现了可选的 `commandPort` transport；这样既能先把真实 Maya 执行、作业配置和验收闭环跑通，也能在已有 commandPort 的 Maya 环境中零安装接入。
