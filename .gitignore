@@ -17,5 +17,8 @@ autosave/
 
 # Local renders and caches
 renders/_tmp/
+.tmp/
+build/
+*.egg-info/
 *.log
 .DS_Store
