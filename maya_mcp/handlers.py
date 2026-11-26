@@ -3,28 +3,36 @@ import re
 from pathlib import Path
 
 from . import images
+from .baking import Baking, TOOLS as BAKING_TOOLS
+from .capabilities import describe, require_plugin
+from .modeling import Modeling, TOOLS as MODELING_TOOLS, finite_vector
 from .policy import output_path, run_commands
+from .topology import Topology, TOOLS as TOPOLOGY_TOOLS
+from .uv import UV, TOOLS as UV_TOOLS, current_uv_set
 
 
-class MayaHandlers:
+class MayaHandlers(Modeling, Topology, UV, Baking):
     def __init__(self, cmds, settings):
         self.cmds = cmds
         self.settings = settings
 
     def commands(self):
-        return {method.__name__: method for method in (
+        commands = {method.__name__: method for method in (
             self.get_maya_info, self.get_scene_info, self.get_object_info,
             self.create_object, self.modify_object, self.delete_object,
             self.set_material, self.create_layer, self.assign_layer,
             self.render_view, self.capture_viewport, self.uv_snapshot,
             self.save_scene, self.export_scene, self.execute_maya_code)}
+        commands.update({tool.__name__: getattr(self, tool.__name__)
+                         for tool in (*MODELING_TOOLS, *TOPOLOGY_TOOLS, *UV_TOOLS, *BAKING_TOOLS)})
+        return commands
 
     def get_maya_info(self):
         c = self.cmds
         return {"version": c.about(version=True), "api_version": c.about(apiVersion=True),
                 "mode": "headless" if c.about(batch=True) else "gui", "pid": os.getpid(),
                 "scene": c.file(query=True, sceneName=True),
-                "plugins": c.pluginInfo(query=True, listPlugins=True) or []}
+                "plugins": c.pluginInfo(query=True, listPlugins=True) or [], **describe(c)}
 
     def get_scene_info(self):
         c = self.cmds
@@ -80,8 +88,10 @@ class MayaHandlers:
         self._name(name)
         parent = self._node(parent) if parent else None
         layer = self._node(layer, "displayLayer") if layer else None
-        if len(size) != 3 or any(v <= 0 for v in size) or not 3 <= segments <= 256:
+        if any(v <= 0 for v in finite_vector(size)) or not 3 <= segments <= 256:
             raise ValueError("Provide three positive dimensions and 3–256 segments")
+        finite_vector(translation)
+        finite_vector(rotation)
         w, h, d = size
         if kind == "cube":
             node = c.polyCube(name=name, width=w, height=h, depth=d, constructionHistory=False)[0]
@@ -115,12 +125,12 @@ class MayaHandlers:
         if new_name is not None:
             self._name(new_name)
         for vector in (translation, rotation, scale):
-            if vector is not None and (len(vector) != 3 or any(
-                    not isinstance(v, (int, float)) for v in vector)):
-                raise ValueError("Transform vectors require three numbers")
+            if vector is not None:
+                finite_vector(vector)
         if target_parent and node.rsplit("|", 1)[0] != target_parent:
+            identifier = c.ls(node, uuid=True)[0]
             c.parent(node, target_parent)
-            node = self._node(target_parent + "|" + node.rsplit("|", 1)[-1])
+            node = c.ls(identifier, long=True)[0]
         if new_name is not None:
             renamed = c.rename(node, new_name)
             parent_path = node.rsplit("|", 1)[0]
@@ -199,34 +209,47 @@ class MayaHandlers:
         c = self.cmds
         plugin, file_type = (("fbxmaya", "FBX export") if target.suffix.lower() == ".fbx"
                              else ("objExport", "OBJexport"))
-        c.loadPlugin(plugin, quiet=True)
+        require_plugin(c, plugin)
         selection = c.ls(selection=True, long=True) or []
         try:
             if nodes:
                 c.select(nodes, replace=True)
-            c.file(target.as_posix(), force=overwrite, type=file_type,
+            options = {"options": "groups=1;ptgroups=1;materials=0;smoothing=1;normals=1"} if plugin == "objExport" else {}
+            c.file(target.as_posix(), force=overwrite, type=file_type, **options,
                    exportSelected=bool(nodes), exportAll=not nodes)
             return written(target)
         finally:
             c.select(selection, replace=True) if selection else c.select(clear=True)
 
-    def render_view(self, path, camera="front", width=800, height=800, overwrite=False):
-        path = self._output(path, {".png"}, overwrite)
-        return images.render_view(self.cmds, path, camera, width, height)
+    def _capture_shapes(self, names):
+        return [self._mesh(name)[1] for name in self._mesh_nodes(names)] if names else []
 
-    def capture_viewport(self, path, camera="front", width=800, height=800, overwrite=False):
+    def render_view(self, path, camera="front", width=800, height=800, overwrite=False,
+                    names=(), frame_names=()):
         path = self._output(path, {".png"}, overwrite)
+        shapes, frame = self._capture_shapes(names), self._capture_shapes(frame_names)
+        with images.isolate_meshes(self.cmds, shapes):
+            return images.render_view(self.cmds, path, camera, width, height,
+                                      self.settings.render_timeout, self.settings.mayapy, overwrite, frame)
+
+    def capture_viewport(self, path, camera="front", width=800, height=800, overwrite=False,
+                         names=(), frame_names=()):
         c = self.cmds
         if c.about(batch=True):
-            return {**images.render_view(c, path, camera, width, height), "fallback": "render"}
-        return images.capture_viewport(c, path, camera, width, height)
+            result = self.render_view(path, camera, width, height, overwrite, names, frame_names)
+            return {**result, "fallback": "render", "warnings": ["Viewport unavailable in standalone Maya"]}
+        output = self._output(path, {".png"}, overwrite)
+        shapes, frame = self._capture_shapes(names), self._capture_shapes(frame_names)
+        with images.isolate_meshes(c, shapes):
+            return images.capture_viewport(c, output, camera, width, height, overwrite, frame)
 
-    def uv_snapshot(self, path, names, size=1024, overwrite=False):
+    def uv_snapshot(self, path, names, size=1024, overwrite=False, uv_set=None, bounds=None):
         path = self._output(path, {".png"}, overwrite)
-        nodes = [self._node(name) for name in names]
-        if not nodes:
-            raise ValueError("Select at least one mesh transform for UV snapshot")
-        return images.uv_snapshot(self.cmds, path, nodes, size)
+        nodes = self._mesh_nodes(names)
+        if uv_set is not None:
+            for node in nodes:
+                current_uv_set(self.cmds, self._mesh(node)[1], uv_set)
+        return images.uv_snapshot(self.cmds, path, nodes, size, uv_set, bounds, overwrite)
 
     def execute_maya_code(self, code):
         if not self.settings.allow_code:

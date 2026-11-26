@@ -1,0 +1,32 @@
+{
+  "title": "HONOR 遥控器建模、拓扑与 UV",
+  "work_name": "遥控器",
+  "student_id": null,
+  "student_name": null,
+  "model_style": "实物比例硬表面建模，以课程参考图为准",
+  "reference_images": [],
+  "requirements": [
+    "中模按参考图制作，图层和大纲分明。",
+    "以课程要求的手工重拓扑完成低模并展开 UV。",
+    "正、侧、背合并一图，主、顶、左高低模对比合并一图。",
+    "低模导出 FBX 或 OBJ，保留低模 UV 图。"
+  ],
+  "output_dir": "examples/honor_remote/submission",
+  "naming_pattern": "{student_id}-{student_name}-{work_name}",
+  "scene_format": "mb",
+  "export_formats": [
+    "fbx"
+  ],
+  "bake_maps": [],
+  "views": [
+    "front",
+    "side",
+    "back"
+  ],
+  "comparison_views": [
+    "persp",
+    "top",
+    "left"
+  ],
+  "uv_snapshot": true
+}

@@ -5,6 +5,7 @@ from concurrent.futures import Future, TimeoutError
 from threading import BoundedSemaphore, Lock, Thread
 
 from .config import Settings
+from .envelope import failure, success
 from .protocol import encode, read_frame
 
 
@@ -56,8 +57,7 @@ class Bridge(socketserver.ThreadingTCPServer):
             self.connections.release()
 
     def error(self, request_id, kind, message):
-        return {"id": request_id, "status": "error", "maya": self.metadata,
-                "error": {"kind": kind, "message": message}}
+        return {"id": request_id, "status": "error", "maya": self.metadata, **failure(kind, message)}
 
     def dispatch(self, request):
         start = time.monotonic()
@@ -86,10 +86,11 @@ class Bridge(socketserver.ThreadingTCPServer):
                 if time.monotonic() - start >= timeout_ms / 1000:
                     raise TimeoutError("Maya main-thread queue deadline expired")
                 result = self.handlers[command](**params)
+                envelope = success(result)
             except Exception as exc:
                 future.set_exception(exc)
             else:
-                future.set_result(result)
+                future.set_result((result, envelope))
             finally:
                 self.command_lock.release()
 
@@ -99,7 +100,7 @@ class Bridge(socketserver.ThreadingTCPServer):
             self.command_lock.release()
             return self.error(request_id, "internal", str(exc))
         try:
-            result = future.result(timeout=max(0, timeout_ms / 1000 - (time.monotonic() - start)))
+            result, envelope = future.result(timeout=max(0, timeout_ms / 1000 - (time.monotonic() - start)))
         except TimeoutError:
             if future.cancel():
                 self.command_lock.release()
@@ -112,7 +113,7 @@ class Bridge(socketserver.ThreadingTCPServer):
         except Exception as exc:
             return self.error(request_id, "maya_error", f"{type(exc).__name__}: {exc}")
         return {"id": request_id, "status": "ok", "result": result, "maya": self.metadata,
-                "ms": round((time.monotonic() - start) * 1000)}
+                "ms": round((time.monotonic() - start) * 1000), **envelope}
 
 
 _gui = None
@@ -129,6 +130,8 @@ def start_gui(settings=None):
     if cmds.about(batch=True):
         raise RuntimeError("Use python -m maya_mcp.worker in standalone Maya")
     settings = settings or Settings.from_env()
+    if not settings.token:
+        raise ValueError("Set the same nonempty MAYA_MCP_TOKEN for Maya and the MCP server")
     bridge = Bridge(settings, MayaHandlers(cmds, settings).commands(), "gui",
                     cmds.about(version=True), utils.executeDeferred)
     Thread(target=bridge.serve_forever, daemon=True).start()

@@ -1,14 +1,46 @@
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from inspect import signature
+from typing import Any, Literal, get_type_hints
 
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from PIL import Image
 
+from .assignment import AssignmentConfig, check_assignment, load_config, plan_assignment
+from .baking import TOOLS as BAKING_TOOLS
 from .client import BridgeError
+from .composition import compose_sheet as compose
 from .config import Settings
+from .envelope import failure, success
+from .jobs import MayaJobs
+from .modeling import TOOLS as MODELING_TOOLS
 from .session import MayaSession
+from .topology import TOOLS as TOPOLOGY_TOOLS
+from .uv import TOOLS as UV_TOOLS
+from .versions import YEARS, discover
 
 Vector = tuple[float, float, float]
+
+
+def register_tools(mcp, call, methods, long=False):
+    registered = {}
+    for method in methods:
+        def bind(method):
+            def invoke(**params):
+                return call(method.__name__, long=long, **params)
+
+            sig = signature(method)
+            hints = get_type_hints(method)
+            args = [param.replace(annotation=hints[param.name])
+                    for param in list(sig.parameters.values())[1:]]
+            invoke.__signature__ = sig.replace(parameters=args, return_annotation=dict[str, Any])
+            invoke.__name__ = method.__name__
+            invoke.__doc__ = method.__doc__
+            return invoke
+
+        tool = bind(method)
+        mcp.add_tool(tool)
+        registered[method.__name__] = tool
+    return registered
 
 
 def make_server(settings):
@@ -19,20 +51,33 @@ def make_server(settings):
         try:
             yield
         finally:
-            session.close()
+            session.close(permanent=True)
 
-    mcp = FastMCP("Maya 2026", lifespan=lifespan)
+    mcp = FastMCP("Maya Assignment Modeling", lifespan=lifespan)
 
     def call(command, *, long=False, **params):
         try:
             return session.call(command, long=long, **params)
         except BridgeError as exc:
-            raise ToolError(f"{exc.kind}: {exc}") from exc
+            return failure(exc.kind, str(exc))
+        except (OSError, ValueError) as exc:
+            return failure("configuration", str(exc))
 
     @mcp.tool()
     def get_maya_info() -> dict[str, Any]:
         """Identify the running Maya session and its mode, version and plugins."""
         return call("get_maya_info")
+
+    @mcp.tool()
+    def list_maya_installations() -> dict[str, Any]:
+        """Find 2022–2026 mayapy executables on this machine without starting Maya."""
+        found = discover()
+        return success({"versions": [
+            {"version": year, "installed": year in found,
+             "mayapy": str(found[year]) if year in found else None,
+             "smoke_status": "not_run" if year in found else "untested"}
+            for year in YEARS
+        ]})
 
     @mcp.tool()
     def get_scene_info() -> dict[str, Any]:
@@ -85,22 +130,35 @@ def make_server(settings):
 
     @mcp.tool()
     def render_view(path: str, camera: str = "front", width: int = 800, height: int = 800,
-                    overwrite: bool = False) -> dict[str, Any]:
-        """Render to PNG using Maya Software. Use front, back, side, left, top, persp or a camera name."""
+                    overwrite: bool = False, names: list[str] | None = None,
+                    frame_names: list[str] | None = None) -> dict[str, Any]:
+        """Render a camera/preset to PNG, optionally isolating meshes and sharing framing across captures."""
         return call("render_view", long=True, path=path, camera=camera, width=width, height=height,
-                    overwrite=overwrite)
+                    overwrite=overwrite, names=names or [], frame_names=frame_names or [])
 
     @mcp.tool()
     def capture_viewport(path: str, camera: str = "front", width: int = 800, height: int = 800,
-                         overwrite: bool = False) -> dict[str, Any]:
+                         overwrite: bool = False, names: list[str] | None = None,
+                         frame_names: list[str] | None = None) -> dict[str, Any]:
         """Capture a GUI model panel; in standalone, return a Maya Software render marked fallback."""
         return call("capture_viewport", long=True, path=path, camera=camera, width=width,
-                    height=height, overwrite=overwrite)
+                    height=height, overwrite=overwrite, names=names or [], frame_names=frame_names or [])
 
     @mcp.tool()
-    def uv_snapshot(path: str, names: list[str], size: int = 1024, overwrite: bool = False) -> dict[str, Any]:
-        """Save a PNG from Maya UV Snapshot for the specified polygon meshes."""
-        return call("uv_snapshot", long=True, path=path, names=names, size=size, overwrite=overwrite)
+    def compose_sheet(rows: list[list[str]], path: str, overwrite: bool = False) -> dict[str, Any]:
+        """Arrange existing PNG/JPEG captures as a rectangular grid and write one composite PNG."""
+        try:
+            return success(compose(settings.root, rows, path, overwrite))
+        except (ValueError, OSError, Image.DecompressionBombError) as exc:
+            return failure("validation", str(exc))
+
+    @mcp.tool()
+    def uv_snapshot(path: str, names: list[str], size: int = 1024, overwrite: bool = False,
+                    uv_set: str | None = None,
+                    bounds: tuple[float, float, float, float] | None = None) -> dict[str, Any]:
+        """Save a UV Snapshot PNG. Bounds are [min_u, min_v, max_u, max_v]."""
+        return call("uv_snapshot", long=True, path=path, names=names, size=size, overwrite=overwrite,
+                    uv_set=uv_set, bounds=bounds)
 
     @mcp.tool()
     def save_scene(path: str, overwrite: bool = False) -> dict[str, Any]:
@@ -116,6 +174,60 @@ def make_server(settings):
     def execute_maya_code(code: str) -> dict[str, Any]:
         """Execute literal cmds calls for ls, listRelatives, objExists, polygon primitives, polyEvaluate and xform."""
         return call("execute_maya_code", code=code)
+
+    @mcp.tool()
+    def assignment_plan(config: AssignmentConfig | None = None,
+                        config_path: str | None = None) -> dict[str, Any]:
+        """Plan the configured modeling assignment and list expected outputs and missing inputs."""
+        try:
+            return success(plan_assignment(settings.root, load_config(settings.root, config, config_path)))
+        except (ValueError, OSError) as exc:
+            return failure("validation", str(exc))
+
+    @mcp.tool()
+    def assignment_check(config: AssignmentConfig | None = None, config_path: str | None = None,
+                         low_meshes: list[str] | None = None, write_report: bool = False,
+                         overwrite: bool = False) -> dict[str, Any]:
+        """Check actual deliverables and optional live low meshes. Optionally write docs/acceptance.json."""
+        def inspect_mesh(name, require_quads):
+            topology = call("mesh_topology", long=True, name=name)
+            if not topology["ok"]:
+                return {"name": name, "ok": False, "errors": [topology["error"]]}
+            uv = call("uv_inspect", long=True, name=name)
+            errors = [uv["error"]] if not uv["ok"] else []
+            if errors:
+                return {"name": name, "ok": False, "errors": errors}
+            data, mapped = topology["data"], uv["data"]
+            ok = (data["faces"] > 0 and not data["non_manifold_edges"] and not data["non_manifold_vertices"] and
+                  not mapped["unmapped_faces"] and bool(mapped["tiles"]) and
+                  (not require_quads or data["quads"] == data["faces"]))
+            return {"name": name, "ok": ok, "faces": data["faces"], "topology": data, "uv": mapped}
+
+        try:
+            definition = load_config(settings.root, config, config_path)
+            return success(check_assignment(settings.root, definition, inspect_mesh, low_meshes or [],
+                                            write_report, overwrite))
+        except (ValueError, OSError) as exc:
+            return failure("validation", str(exc))
+
+    register_tools(mcp, call, MODELING_TOOLS)
+    topology_tools = register_tools(mcp, call, TOPOLOGY_TOOLS, long=True)
+    register_tools(mcp, call, UV_TOOLS, long=True)
+    bake_tools = register_tools(mcp, call, BAKING_TOOLS, long=True)
+    jobs = MayaJobs({**bake_tools, "mesh_retopo": topology_tools["mesh_retopo"],
+                    "mesh_rebuild": topology_tools["mesh_rebuild"], "mesh_reduce": topology_tools["mesh_reduce"],
+                    "render_view": render_view, "capture_viewport": capture_viewport,
+                    "uv_snapshot": uv_snapshot, "save_scene": save_scene, "export_scene": export_scene})
+
+    @mcp.tool()
+    def submit_job(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Start one pollable bake, render, topology, snapshot, save or export operation."""
+        return jobs.submit(tool, arguments)
+
+    @mcp.tool()
+    def job_status(job_id: str) -> dict[str, Any]:
+        """Poll a queued or running Maya job and retrieve its response once finished."""
+        return jobs.status(job_id)
 
     return mcp
 

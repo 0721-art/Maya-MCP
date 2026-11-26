@@ -11,6 +11,8 @@ def main():
     import maya.standalone
 
     settings = Settings.from_env()
+    if not settings.token:
+        raise ValueError("Standalone bridge requires a nonempty MAYA_MCP_TOKEN")
     maya.standalone.initialize(name="python")
     try:
         from maya import cmds

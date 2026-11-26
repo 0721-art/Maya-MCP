@@ -1,6 +1,8 @@
 import socket
 from uuid import uuid4
 
+from .envelope import success
+
 from .protocol import encode, read_frame
 
 
@@ -16,6 +18,14 @@ class BridgeClient:
         self.token = token
 
     def call(self, command, *, timeout=60, **params):
+        return self._call(command, timeout, params)["result"]
+
+    def envelope(self, command, *, timeout=60, **params):
+        reply = self._call(command, timeout, params)
+        fields = ("ok", "data", "error", "warnings", "artifacts")
+        return {name: reply[name] for name in fields} if reply.get("ok") is True else success(reply["result"])
+
+    def _call(self, command, timeout, params):
         request_id = uuid4().hex
         frame = encode({"id": request_id, "type": command, "params": params,
                         "timeout_ms": max(1, int(timeout * 1000)), "token": self.token})
@@ -35,7 +45,7 @@ class BridgeClient:
         if reply.get("id") != request_id:
             raise BridgeError("protocol", "Mismatched Maya response ID")
         if reply.get("status") == "ok" and isinstance(reply.get("result"), dict):
-            return reply["result"]
+            return reply
         error = reply.get("error")
         if reply.get("status") == "error" and isinstance(error, dict):
             raise BridgeError(error.get("kind", "internal"), error.get("message", "Bridge error"))

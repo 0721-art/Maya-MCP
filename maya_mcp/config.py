@@ -2,6 +2,9 @@ import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
+
+from .versions import YEARS, choose_mayapy
 
 
 @dataclass(frozen=True)
@@ -12,9 +15,10 @@ class Settings:
     root: Path = Path.cwd()
     timeout: float = 60
     render_timeout: float = 600
-    allow_code: bool = True
+    allow_code: bool = False
     mode: str = "auto"
-    mayapy: Path = Path("D:/Maya 2026/Maya2026/bin/mayapy.exe")
+    mayapy: Optional[Path] = None
+    version: Optional[int] = None
 
     def __post_init__(self):
         if self.host != "127.0.0.1":
@@ -23,10 +27,13 @@ class Settings:
             raise ValueError("Invalid Maya bridge port or mode")
         if any(not 0 < value <= 3600 for value in (self.timeout, self.render_timeout)):
             raise ValueError("Timeouts must be in (0, 3600] seconds")
+        if self.version is not None and self.version not in YEARS:
+            raise ValueError("MAYA_MCP_VERSION must be a year from 2022 to 2026")
 
     @classmethod
     def from_env(cls):
         env = os.environ
+        year = int(env["MAYA_MCP_VERSION"]) if env.get("MAYA_MCP_VERSION") else None
         return cls(
             host=env.get("MAYA_MCP_HOST", "127.0.0.1"),
             port=int(env.get("MAYA_MCP_PORT", "9876")),
@@ -34,9 +41,10 @@ class Settings:
             root=Path(env.get("MAYA_MCP_PROJECT_ROOT", Path.cwd())).resolve(),
             timeout=float(env.get("MAYA_MCP_TIMEOUT", "60")),
             render_timeout=float(env.get("MAYA_MCP_RENDER_TIMEOUT", "600")),
-            allow_code=env.get("MAYA_MCP_ALLOW_CODE", "1") == "1",
+            allow_code=env.get("MAYA_MCP_ALLOW_CODE", "0") == "1",
             mode=env.get("MAYA_MCP_MODE", "auto"),
-            mayapy=Path(env.get("MAYA_MCP_MAYAPY", str(cls.mayapy))),
+            mayapy=choose_mayapy(year),
+            version=year,
         )
 
 

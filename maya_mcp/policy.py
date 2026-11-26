@@ -1,19 +1,44 @@
 import ast
+import os
 from pathlib import Path
 
 
 def output_path(root, name, extensions, overwrite=False):
-    root = root.resolve()
-    path = (root / Path(name)).resolve()
-    protected = {".git", ".agents", ".codex", ".aws"}
-    if not path.is_relative_to(root) or protected.intersection(path.relative_to(root).parts):
-        raise ValueError("Output path must be inside the project root and outside metadata")
+    if type(overwrite) is not bool:
+        raise ValueError("overwrite must be a boolean")
+    path = project_path(root, name)
     if path.suffix.lower() not in extensions:
         raise ValueError(f"Expected a file with suffix in {sorted(extensions)}")
     if path.exists() and (not overwrite or not path.is_file()):
         raise ValueError(f"Output already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def project_path(root, name):
+    root = root.resolve()
+    raw = Path(name)
+    if ":" in str(raw)[len(raw.drive):]:
+        raise ValueError("File streams are not valid project paths")
+    path = (root / raw).resolve()
+    try:
+        parts = path.relative_to(root).parts
+    except ValueError:
+        parts = ()
+    protected = {".git", ".agents", ".codex", ".aws"}
+    if not parts or protected.intersection(part.rstrip(" .").casefold() for part in parts):
+        raise ValueError("File path must be inside the project root and outside metadata")
+    return path
+
+
+def publish_file(source, target, overwrite=False):
+    if overwrite:
+        source.replace(target)
+    else:
+        try:
+            os.link(str(source), str(target))
+        except FileExistsError as exc:
+            raise ValueError(f"Output already exists: {target}") from exc
 
 
 def run_commands(code, commands):

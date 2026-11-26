@@ -1,6 +1,12 @@
 from contextlib import contextmanager
+import os
+import locale
+import math
 from pathlib import Path
+import subprocess
+import sys
 from tempfile import TemporaryDirectory
+from .policy import publish_file
 
 PRESETS = {
     "front": (0, 0, 0), "back": (0, 180, 0), "side": (0, 90, 0),
@@ -14,8 +20,10 @@ def dimensions(width, height):
 
 
 @contextmanager
-def view_camera(cmds, camera, width, height):
+def view_camera(cmds, camera, width, height, frame_shapes=()):
     if camera not in PRESETS:
+        if not isinstance(camera, str) or any(char in camera for char in "*?[]"):
+            raise ValueError("Use an exact camera name or preset")
         matches = cmds.ls(camera, exactType="camera", long=True) or []
         if not matches:
             matches = [shape for shape in
@@ -28,10 +36,10 @@ def view_camera(cmds, camera, width, height):
 
     from maya.api import OpenMaya as om
 
-    meshes = cmds.ls(type="mesh", long=True, noIntermediate=True, visible=True) or []
+    meshes = frame_shapes or cmds.ls(type="mesh", long=True, noIntermediate=True, visible=True) or []
     if not meshes:
         raise ValueError("No visible meshes to frame")
-    box = cmds.exactWorldBoundingBox(meshes, ignoreInvisible=True)
+    box = cmds.exactWorldBoundingBox(meshes, ignoreInvisible=not frame_shapes)
     center = om.MVector(*[(lo + hi) / 2 for lo, hi in zip(box[:3], box[3:])])
     rotation = PRESETS[camera]
     node, shape = cmds.camera(name="MCP_view", orthographic=True)
@@ -53,33 +61,74 @@ def view_camera(cmds, camera, width, height):
         cmds.delete(node)
 
 
-def render_view(cmds, path, camera, width, height):
+@contextmanager
+def isolate_meshes(cmds, shapes):
+    if not shapes:
+        yield
+        return
+    visible = set(cmds.ls(type="mesh", long=True, noIntermediate=True, visible=True) or [])
+    if not set(shapes) <= visible:
+        raise ValueError("Make all requested mesh shapes visible before capturing")
+    changed = []
+    try:
+        for node in sorted(visible - set(shapes)):
+            attribute = node + ".visibility"
+            if not cmds.getAttr(attribute, settable=True):
+                raise ValueError(f"Cannot isolate the meshes while {attribute} is locked or connected")
+            cmds.setAttr(attribute, False)
+            changed.append(attribute)
+        yield
+    finally:
+        for attribute in changed:
+            cmds.setAttr(attribute, True)
+
+
+def render_view(cmds, path, camera, width, height, timeout=600, executable=None, overwrite=False,
+                frame_shapes=()):
     from .handlers import written
 
     dimensions(width, height)
-    globals_node = "defaultRenderGlobals."
-    attributes = {"imageFormat": 32, "animation": False, "currentRenderer": "mayaSoftware"}
-    previous = {key: cmds.getAttr(globals_node + key) for key in (*attributes, "imageFilePrefix")}
-    with view_camera(cmds, camera, width, height) as shape, TemporaryDirectory() as temp:
-        attributes["imageFilePrefix"] = (Path(temp) / "view").as_posix()
-        try:
-            for key, value in attributes.items():
-                if isinstance(value, str):
-                    cmds.setAttr(globals_node + key, value, type="string")
-                else:
-                    cmds.setAttr(globals_node + key, value)
-            source = Path(cmds.render(shape, x=width, y=height))
-            path.write_bytes(source.read_bytes())
-        finally:
-            for key, value in previous.items():
-                if isinstance(value, str) or value is None:
-                    cmds.setAttr(globals_node + key, value or "", type="string")
-                else:
-                    cmds.setAttr(globals_node + key, value)
+    render = Path(executable or sys.executable).with_name("Render.exe" if os.name == "nt" else "Render")
+    if not render.is_file():
+        raise ValueError(f"Maya command-line renderer is unavailable: {render}")
+    with view_camera(cmds, camera, width, height, frame_shapes) as shape, TemporaryDirectory(dir=path.parent) as temp:
+        folder = Path(temp)
+        scene = folder / "view.ma"
+        cmds.file(scene.as_posix(), exportAll=True, force=True, type="mayaAscii",
+                  preserveReferences=False)
+        frame = str(cmds.currentTime(query=True))
+        arguments = [str(render), "-r", "sw", "-proj", temp, "-rd", temp, "-im", "mcp_render",
+                     "-of", "png", "-s", frame, "-e", frame, "-cam", shape.split("|")[-1],
+                     "-x", str(width), "-y", str(height), str(scene)]
+        log = folder / "render.log"
+        with log.open("wb") as stream:
+            result = subprocess.run(arguments, cwd=temp, stdout=stream, stderr=subprocess.STDOUT,
+                                    timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        frames = list(folder.glob("mcp_render*.png*"))
+        if result.returncode or len(frames) != 1:
+            detail = log.read_bytes()[-1000:].decode(locale.getpreferredencoding(False), errors="replace")
+            raise RuntimeError(f"Maya Software did not produce the requested PNG ({result.returncode}): {detail}")
+        source = frames[0].rename(folder / "view.png")
+        publish_png(source, path, width, height, overwrite)
     return {**written(path), "source": "mayaSoftware", "camera": camera}
 
 
-def capture_viewport(cmds, path, camera, width, height):
+def publish_png(source, target, width, height, overwrite=False):
+    from maya.api import OpenMaya as om
+
+    if not source.is_file():
+        raise RuntimeError(f"Maya did not produce {source.name}")
+    with source.open("rb") as stream:
+        if stream.read(8) != b"\x89PNG\r\n\x1a\n":
+            raise RuntimeError(f"Expected a PNG from Maya: {source.name}")
+    image = om.MImage()
+    image.readFromFile(source.as_posix())
+    if tuple(image.getSize()) != (width, height):
+        raise RuntimeError(f"Unexpected dimensions in {source.name}")
+    publish_file(source, target, overwrite)
+
+
+def capture_viewport(cmds, path, camera, width, height, overwrite=False, frame_shapes=()):
     from .handlers import written
 
     dimensions(width, height)
@@ -90,7 +139,7 @@ def capture_viewport(cmds, path, camera, width, height):
     panel = focused if focused in panels else panels[0]
     previous = cmds.modelPanel(panel, query=True, camera=True)
     image_format = cmds.getAttr("defaultRenderGlobals.imageFormat")
-    with view_camera(cmds, camera, width, height) as shape, TemporaryDirectory() as temp:
+    with view_camera(cmds, camera, width, height, frame_shapes) as shape, TemporaryDirectory(dir=path.parent) as temp:
         target = Path(temp) / "viewport.png"
         try:
             cmds.modelPanel(panel, edit=True, camera=shape)
@@ -99,26 +148,32 @@ def capture_viewport(cmds, path, camera, width, height):
                            completeFilename=target.as_posix(), showOrnaments=False,
                            frame=cmds.currentTime(query=True), percent=100,
                            widthHeight=(width, height), offScreen=True, forceOverwrite=True)
-            path.write_bytes(target.read_bytes())
+            publish_png(target, path, width, height, overwrite)
         finally:
             cmds.modelPanel(panel, edit=True, camera=previous)
             cmds.setAttr("defaultRenderGlobals.imageFormat", image_format)
     return {**written(path), "source": "mayaViewport", "camera": camera}
 
 
-def uv_snapshot(cmds, path, nodes, size):
+def uv_snapshot(cmds, path, nodes, size, uv_set=None, bounds=None, overwrite=False):
     from .handlers import written
 
     dimensions(size, size)
+    options = {"uvSetName": uv_set} if uv_set is not None else {}
+    if bounds is not None:
+        if (len(bounds) != 4 or any(not math.isfinite(v) for v in bounds) or
+                bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
+            raise ValueError("Bounds must be [min_u, min_v, max_u, max_v] with positive width and height")
+        options.update(zip(("uMin", "vMin", "uMax", "vMax"), bounds))
     selection = cmds.ls(selection=True, long=True) or []
-    with TemporaryDirectory() as temp:
+    with TemporaryDirectory(dir=path.parent) as temp:
         target = Path(temp) / "uv.png"
         try:
             cmds.select(nodes, replace=True)
             cmds.uvSnapshot(name=target.as_posix(), fileFormat="png", overwrite=True,
                             xResolution=size, yResolution=size,
-                            redColor=244, greenColor=246, blueColor=250, antiAlias=True)
-            path.write_bytes(target.read_bytes())
+                            redColor=244, greenColor=246, blueColor=250, antiAliased=True, **options)
+            publish_png(target, path, size, size, overwrite)
         finally:
             cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
     return {**written(path), "source": "mayaUvSnapshot"}

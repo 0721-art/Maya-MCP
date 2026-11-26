@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "maya-mcp"
-version = "0.1.0"
-description = "MCP stdio modeling tools for Maya 2026"
+version = "0.2.0"
+description = "MCP stdio tools for Maya modeling assignments"
 requires-python = ">=3.11"
 dependencies = ["mcp==1.30.0", "Pillow>=10,<13"]
 
