@@ -25,7 +25,7 @@ REQUIRED = {"get_maya_info", "get_scene_info", "get_object_info", "create_object
             "mesh_mirror", "array_objects", "mesh_boolean", "mesh_combine", "mesh_separate",
             "group_objects", "mesh_topology", "mesh_retopo", "mesh_reduce", "mesh_rebuild",
             "mesh_snap", "set_symmetry", "uv_project", "uv_unfold", "uv_layout", "uv_sets", "uv_inspect",
-            "bake_map", "bake_arnold_texture", "compose_sheet", "assignment_plan", "assignment_check",
+            "bake_map", "bake_arnold_texture", "compose_sheet",
             "list_maya_installations", "submit_job", "job_status"}
 
 
@@ -57,11 +57,6 @@ async def smoke(year, executable):
                 assert str(year) in info["version"] and info["mode"] == "headless", info
                 print(f"Maya {info['version']} API {info['api_version']}, Python {info['python']}, "
                       f"Transfer Maps {info['capabilities']['transfer_maps']}")
-                config = {"title": "Smoke assignment", "work_name": "Smoke", "output_dir": "submission"}
-                plan = await call("assignment_plan", config=config)
-                assert {"student_id", "student_name", "reference_images"} <= set(plan["missing_inputs"])
-                check = await call("assignment_check", config=config, write_report=True)
-                assert not check["ready"] and (Path(folder) / "submission/docs/acceptance.json").is_file(), check
                 installations = await call("list_maya_installations")
                 assert any(item["version"] == year and item["installed"] for item in installations["versions"])
                 await call("create_layer", name="smoke_geo")
@@ -155,7 +150,7 @@ async def smoke(year, executable):
                         assert "license state" in response["error"]["message"], response
                         assert not response["artifacts"] and not (Path(folder) / "arnold-ao.exr").exists()
                         print(f"UNAVAILABLE: Maya {year} {response['error']['message']}")
-    print(f"PASS: MCP stdio -> Maya {year}: modeling, topology, UV, four PNG bake maps, render, export, assignments, jobs")
+    print(f"PASS: MCP stdio -> Maya {year}: modeling, topology, UV, four PNG bake maps, render, export, jobs")
 
 
 if __name__ == "__main__":

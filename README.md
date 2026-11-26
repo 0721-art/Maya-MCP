@@ -1,34 +1,34 @@
-# Maya-MCP
+# Maya MCP
 
-面向“在对话中完成 Maya 建模作业”的 MCP stdio 服务。它把建模、拓扑、UV、烘焙、截图/渲染、导出和作业验收组织成可被 Agent 调用的工具，而不是把某一道 HONOR 遥控器题目写死在代码里。
+一个通用的 Autodesk Maya MCP stdio 服务：让 Agent 在真实 Maya 会话或 `mayapy` headless 进程中完成建模、拓扑、UV、烘焙、渲染、截图和导出。
 
-HONOR 遥控器只是 `examples/honor_remote/` 中的示例；真正的作业通过 JSON 配置驱动，可以替换题目、参考图、命名和交付项。
+Maya MCP 不内置作业模板、固定题目或特定交付流程。课程作业只是它最常见的使用场景；题目、命名、参考图和验收标准由外部 Agent/客户端组织。
 
 ## 设计来源
 
-参考了 [mcp-for-blender](https://github.com/ahujasid/mcp-for-blender) 的“MCP Server + DCC 内桥接”思路，并调研了这些 Maya MCP 项目：
+参考了 [mcp-for-blender](https://github.com/ahujasid/mcp-for-blender) 的“MCP server + DCC 内桥接”思路，并调研了这些 Maya MCP 项目：
 
 - [PatrickPalmer/MayaMCP](https://github.com/PatrickPalmer/MayaMCP)：Maya `commandPort`、Maya 侧动态工具、低层 MCP。
 - [Xxx91n/mcp-for-maya](https://github.com/Xxx91n/mcp-for-maya)：`commandPort`、自动发现端口、多 Maya 实例、场景/相机/资产工具。
-- [GimbalGoats/GG_MayaMCP](https://github.com/GimbalGoats/GG_MayaMCP)：`commandPort`、71 个类型化工具、Maya 2024+。
-- [dcc-mcp/dcc-mcp-maya](https://github.com/dcc-mcp/dcc-mcp-maya)：大量可发现工具、UV/烘焙专题、Maya 2022/Python 3.7 兼容提示。
+- [GimbalGoats/GG_MayaMCP](https://github.com/GimbalGoats/GG_MayaMCP)：`commandPort`、大量类型化工具、Maya 2024+。
+- [dcc-mcp/dcc-mcp-maya](https://github.com/dcc-mcp/dcc-mcp-maya)：可发现工具、UV/烘焙专题、Maya 2022/Python 3.7 兼容提示。
 - [chadrik/maya-mcp-server](https://github.com/chadrik/maya-mcp-server)：`commandPort`、多会话资源。
 
-本仓库没有直接复制这些项目。当前实现支持两种传输：默认的**本地回环 TCP + token 的 JSON 桥接**，以及 Maya 原生 `commandPort`（`MAYA_MCP_MODE=commandport`）；同时支持 Maya GUI 和 `mayapy` headless。`commandPort` 模式不需要在 Maya 侧安装 Python 包，详见 [Maya 参考调研](docs/MAYA_REFERENCES.md) 和 [架构](#架构)。
+本仓库没有复制这些项目的代码。当前实现支持两种传输：默认的**本地回环 TCP + token 的 JSON 桥接**，以及 Maya 原生 `commandPort`（`MAYA_MCP_MODE=commandport`）；同时支持 Maya GUI 和 `mayapy` headless。commandPort 模式不需要在 Maya 侧安装 Python 包。更多对比见 [Maya 参考调研](docs/MAYA_REFERENCES.md)。
 
 ## 特性
 
 - 标准 MCP stdio 服务，可接入 DSH、Codex、Claude 等 MCP 客户端。
-- 44 个工具，覆盖：
+- 42 个工具，覆盖：
   - Maya 安装发现、场景/对象检查、对象与 NURBS 建模；
-  - 手动/自动低模拓扑、减少面数、重拓扑、吸附、对称；
+  - 拓扑检查、重拓扑、减面、重建、吸附、对称；
   - UV 投影、展开、排布、UV 集与 UV 检查；
   - 高模到低模的 native bake（normal/AO/curvature/color）和 Arnold texture bake（需 Arnold 许可）；
   - 渲染、GUI viewport 截图、多图拼版、UV 截图；
   - 保存 `.ma/.mb`、导出 FBX/OBJ；
-  - 作业计划、交付验收、长任务轮询。
+  - 长任务提交与轮询。
 - 支持 Maya 2022–2026 的**发现与版本选择**；当前机器只在 Maya 2026 上完成实测，其他版本会明确标记为 `UNTESTED`。
-- 服务进程不 `import maya`；Maya 相关代码只在 Maya 的 Python 进程里执行，避免宿主进程被 Maya 绑定。
+- 服务进程不 `import maya`；Maya 相关代码只在 Maya 的 Python 进程里执行。
 - 路径限制、token 校验、命令白名单、超时与 job 轮询。
 
 ## 架构
@@ -46,30 +46,28 @@ maya_mcp.server (宿主 Python 3.11+)
                          Maya cmds
 ```
 
-- **GUI 模式**：Maya 处于打开状态，操作会出现在当前场景/Outliner 中，适合人工检查、建模作业和截图。
-- **headless 模式**：`MayaSession` 发现 `mayapy` 后启动 `python -m maya_mcp.worker`，适合自动测试、批量生成和 CI。
-- **commandPort 模式**：连接 Maya 自带的 `cmds.commandPort` socket，不在 Maya 侧安装任何包，也不会启动 worker。
-- 服务默认 `MAYA_MCP_MODE=auto`：先探测已有 bridge；没有则启动 headless worker。要用 GUI，请把模式设为 `gui` 并在 Maya 内启动 bridge；要用原生 commandPort，请设为 `commandport`。
+- **GUI 模式**：Maya 处于打开状态，操作出现在当前场景/Outliner 中，适合人工检查、建模和截图。
+- **headless 模式**：`MayaSession` 发现 `mayapy` 后启动 `python -m maya_mcp.worker`，适合自动测试和批量生成。
+- **commandPort 模式**：连接 Maya 自带的 `cmds.commandPort` socket，不在 Maya 侧安装包，也不会启动 worker。
+- 默认 `MAYA_MCP_MODE=auto`：先探测已有 bridge；没有则启动 headless worker。GUI 需设置 `MAYA_MCP_MODE=gui` 并在 Maya 内启动 bridge；原生 commandPort 使用 `commandport`。
 
 ## 环境要求
 
-- 宿主：Python 3.11+（`.venv` 已使用 3.11）。
+- 宿主：Python 3.11+。
 - Maya：2026 已实测；2022–2025 仅实现发现/选择逻辑，尚未在本机实测。
-- Maya 2026 路径（本机）：
+- Maya 2026 路径（本机示例）：
   - `D:\Maya 2026\Maya2026`
   - `D:\Maya 2026\Maya2026\bin\mayapy.exe`
 - Python 依赖：`mcp==1.30.0`、`Pillow>=10,<13`（见 `pyproject.toml`）。
 
 ## 安装
 
-在仓库根目录执行：
-
 ```powershell
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-如果使用已有的 `.venv`，只需确认依赖：
+已有 `.venv` 时只需重新安装：
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -e .
@@ -80,284 +78,153 @@ py -3.11 -m venv .venv
 ### 1. 只启动 MCP 服务
 
 ```powershell
-cd D:\Maya-MCP
-.\.venv\Scripts\python.exe -m maya_mcp.server
+$env:MAYA_MCP_MODE = "headless"
+$env:MAYA_MCP_PROJECT_ROOT = "D:\MayaProjects"
+python -m maya_mcp.server
 ```
 
-stdin/stdout 使用 MCP 协议；不要在同一条 stdout 上打印调试信息。
+MCP 客户端通过 stdio 与该进程通信。不要把日志写到 stdout；stdout 只用于 MCP JSON-RPC。
 
-### 2. headless（自动启动 Maya）
+### 2. GUI 模式
 
-```powershell
-$env:MAYA_MCP_PROJECT_ROOT = "D:\Maya-MCP"
-$env:MAYA_MCP_MAYAPY = "D:\Maya 2026\Maya2026\bin\mayapy.exe"
-$env:MAYA_MCP_MODE = "auto"
-.\.venv\Scripts\python.exe -m maya_mcp.server
-```
+1. 打开 Maya，在 Script Editor 中启动 bridge（或使用下面的 commandPort 模式）。
+2. 设置 `MAYA_MCP_MODE=gui` 和对应的 `MAYA_MCP_HOST`/`MAYA_MCP_PORT`/`MAYA_MCP_TOKEN`。
+3. 启动 `python -m maya_mcp.server`，再让 MCP 客户端连接。
 
-首次工具调用会启动 `mayapy` worker，等待 Maya standalone 就绪。
+### 3. commandPort 模式
 
-### 3. GUI 模式（推荐做作业时使用）
-
-先设置和 MCP 服务一致的 token，再在 Maya 的 Script Editor 中运行：
+在 Maya 中打开一个 commandPort，例如：
 
 ```python
-import os
-import sys
-
-os.environ["MAYA_MCP_TOKEN"] = "replace-with-a-long-random-token"
-sys.path.insert(0, r"D:\Maya-MCP")
-
-from maya_mcp.bridge import start_gui
-
-start_gui()
+import maya.cmds as cmds
+cmds.commandPort(name="127.0.0.1:7001", sourceType="python")
 ```
 
-MCP 服务侧：
-
-```powershell
-$env:MAYA_MCP_MODE = "gui"
-$env:MAYA_MCP_TOKEN = "replace-with-a-long-random-token"
-$env:MAYA_MCP_PORT = "9876"
-.\.venv\Scripts\python.exe -m maya_mcp.server
-```
-
-GUI bridge 默认监听 `127.0.0.1:9876`。如果端口被占用，修改 `MAYA_MCP_PORT` 并保持服务端一致。
-
-### 4. Maya 原生 commandPort（可选，零 Maya 侧安装）
-
-在 Maya 的 Script Editor 中执行（端口和 token 要与 MCP 服务端一致）：
-
-```python
-import os
-import sys
-
-os.environ["MAYA_MCP_COMMAND_TOKEN"] = "replace-with-a-long-random-token"
-sys.path.insert(0, r"D:\Maya-MCP")
-
-from maya import cmds
-cmds.commandPort(name="127.0.0.1:9876", sourceType="python")
-```
-
-MCP 服务侧：
+然后：
 
 ```powershell
 $env:MAYA_MCP_MODE = "commandport"
-$env:MAYA_MCP_TOKEN = "replace-with-a-long-random-token"
-$env:MAYA_MCP_COMMAND_PORT = "9876"
-.\\.venv\\Scripts\\python.exe -m maya_mcp.server
+$env:MAYA_MCP_COMMAND_PORT = "7001"
+$env:MAYA_MCP_TOKEN = "your-token"
+python -m maya_mcp.server
 ```
 
-commandPort 模式直接复用现有工具层；不会启动 `mayapy` worker。当前只支持显式端口，尚未做多实例自动发现。
+commandPort 模式不启动 worker；它直接连接 Maya 的 line socket。Maya 侧需要能导入 `maya_mcp.commandport.dispatch`，或由现有 bridge 注入 dispatch。
 
 ## MCP 客户端配置
 
-通用 stdio 配置示例（把路径替换为你的实际路径）：
+以 DSH/Codex 一类 stdio MCP 客户端为例，配置结构通常如下（按客户端实际字段调整）：
 
 ```json
 {
   "mcpServers": {
-    "maya-mcp": {
+    "maya": {
       "command": "D:\\Maya-MCP\\.venv\\Scripts\\python.exe",
       "args": ["-m", "maya_mcp.server"],
       "cwd": "D:\\Maya-MCP",
       "env": {
-        "MAYA_MCP_PROJECT_ROOT": "D:\\Maya-MCP",
-        "MAYA_MCP_MAYAPY": "D:\\Maya 2026\\Maya2026\\bin\\mayapy.exe",
-        "MAYA_MCP_MODE": "auto"
+        "MAYA_MCP_MODE": "headless",
+        "MAYA_MCP_PROJECT_ROOT": "D:\\MayaProjects"
       }
     }
   }
 }
 ```
 
-接入 Agents-MCP 时，server 名称建议用 `maya-mcp`，工具会以客户端约定的前缀暴露；本仓库不依赖特定客户端。
+首次连接后建议依次调用：
 
-## 配置项
+1. `get_maya_info`
+2. `list_maya_installations`
+3. `get_scene_info`
+4. 一个小的 `create_object` 测试
 
-| 变量 | 默认 | 说明 |
-|---|---|---|
-| `MAYA_MCP_PROJECT_ROOT` | 当前目录 | 项目根；所有输出路径都限制在它下面 |
-| `MAYA_MCP_MAYAPY` | 自动发现 | 指定 `mayapy.exe`，优先于版本扫描 |
-| `MAYA_MCP_VERSION` | 自动 | `2022`–`2026`；指定后只接受该版本 |
-| `MAYA_MCP_INSTALL_ROOTS` | 系统默认 | 额外的 Maya 安装根目录，多个用 `;` 分隔 |
-| `MAYA_MCP_MODE` | `auto` | `auto` / `gui` / `headless` / `commandport` |
-| `MAYA_MCP_PORT` | `9876` | GUI/headless bridge 端口；只允许回环地址 |
-| `MAYA_MCP_COMMAND_PORT` | `9876` | `commandport` 模式使用的 Maya `commandPort` 端口 |
-| `MAYA_MCP_TOKEN` | 空 | GUI/commandport 模式必须显式设置；headless 会自动生成 |
-| `MAYA_MCP_COMMAND_TOKEN` | 空 | Maya 进程内的 commandPort 校验 token；设置后必须与服务端 `MAYA_MCP_TOKEN` 一致 |
-| `MAYA_MCP_TIMEOUT` | `60` | 普通命令超时（秒） |
-| `MAYA_MCP_RENDER_TIMEOUT` | `600` | 渲染/烘焙等长任务超时（秒） |
-| `MAYA_MCP_ALLOW_CODE` | `0` | 是否允许受限的 `execute_maya_code` |
-| `MAYA_MCP_LOG` | `.tmp/maya-worker.log` | Maya worker 日志路径 |
+## 工具组
 
-## 工具目录（44 个）
+| 组 | 代表工具 |
+|---|---|
+| 场景/对象 | `get_maya_info`, `list_maya_installations`, `get_scene_info`, `get_object_info`, `create_object`, `modify_object`, `delete_object` |
+| 材质/层 | `set_material`, `create_layer`, `assign_layer` |
+| 建模 | `create_curve`, `loft_mesh`, `mesh_extrude`, `mesh_bevel`, `mesh_mirror`, `array_objects`, `mesh_boolean`, `mesh_combine`, `mesh_separate`, `group_objects` |
+| 拓扑 | `mesh_topology`, `mesh_retopo`, `mesh_reduce`, `mesh_rebuild`, `mesh_snap`, `set_symmetry` |
+| UV | `uv_project`, `uv_unfold`, `uv_layout`, `uv_sets`, `uv_inspect`, `uv_snapshot` |
+| 烘焙 | `bake_map`, `bake_arnold_texture` |
+| 渲染/截图 | `render_view`, `capture_viewport`, `compose_sheet` |
+| 保存/导出 | `save_scene`, `export_scene` |
+| 异步 | `submit_job`, `job_status` |
+| 代码执行 | `execute_maya_code`（默认关闭，白名单限制） |
 
-### 会话、场景与低层查询
+## 典型工作流
 
-`get_maya_info`、`list_maya_installations`、`get_scene_info`、`get_object_info`、`execute_maya_code`
+### 建模
 
-### 建模与组织
+1. `get_scene_info` 查看场景。
+2. `create_object` / `create_curve` / `loft_mesh` 建立大形。
+3. `modify_object`、`mesh_extrude`、`mesh_bevel`、`mesh_boolean` 细化。
+4. `set_material`、`create_layer` 整理材质与显示层。
+5. `render_view` 或 `capture_viewport` 检查轮廓。
+6. `save_scene` 保存 `.ma/.mb`。
 
-`create_object`、`modify_object`、`delete_object`、`create_curve`、`loft_mesh`、`mesh_extrude`、`mesh_bevel`、`mesh_mirror`、`array_objects`、`mesh_boolean`、`mesh_combine`、`mesh_separate`、`group_objects`
+### 拓扑与 UV
 
-### 材质、渲染与导出
+1. `mesh_topology` 检查面数、非流形边、四边形比例。
+2. `mesh_retopo` / `mesh_reduce` / `mesh_rebuild` 生成低模候选。
+3. `uv_project` → `uv_unfold` → `uv_layout` → `uv_inspect`。
+4. `uv_snapshot` 输出 UV 图。
+5. `mesh_snap` 将低模吸附到高模表面。
 
-`set_material`、`create_layer`、`assign_layer`、`render_view`、`capture_viewport`、`compose_sheet`、`uv_snapshot`、`save_scene`、`export_scene`
+### 烘焙与交付
 
-### 拓扑与低模
+1. 确认高低模命名和对应关系。
+2. `bake_map` 生成 normal/AO/curvature/color PNG；有 Arnold 许可时可用 `bake_arnold_texture`。
+3. `compose_sheet` 合并多视角/高低模对比图。
+4. `export_scene` 导出 FBX/OBJ。
+5. 用 `render_view` 生成最终检查图。
 
-`mesh_topology`、`mesh_reduce`、`mesh_retopo`、`mesh_rebuild`、`mesh_snap`、`set_symmetry`
-
-### UV
-
-`uv_project`、`uv_unfold`、`uv_layout`、`uv_sets`、`uv_inspect`
-
-### 烘焙
-
-`bake_map`（native，输出 normal/AO/curvature/color PNG）、`bake_arnold_texture`（Requires Arnold/MtoA 和有效许可）
-
-### 作业与长任务
-
-`assignment_plan`、`assignment_check`、`submit_job`、`job_status`
-
-## 作业工作流
-
-### 1. 创建配置
-
-从 [examples/assignment.template.json](examples/assignment.template.json) 复制一份，填写：
-
-- `title`、`work_name`：题目/作品名；
-- `student_id`、`student_name`：没有就保留 `null`，工具会生成 `MISSING-...` 占位符并提醒；
-- `reference_images`：参考图路径（相对项目根）；
-- `requirements`：文字要求；
-- `scene_format`、`export_formats`、`bake_maps`、`views`、`comparison_views`；
-- `output_dir` 和 `naming_pattern`。
-
-HONOR 示例见 [examples/honor_remote/assignment.json](examples/honor_remote/assignment.json)，但不要把示例当成唯一题目。
-
-### 2. 生成计划
-
-用 MCP 客户端调用：
-
-```json
-{
-  "name": "assignment_plan",
-  "arguments": {
-    "config_path": "examples/assignment.template.json"
-  }
-}
-```
-
-返回阶段、禁用项、命名结果、缺失输入、预期文件路径和警告。它不会伪造交付物；`ready` 仍取决于真实文件和输入。
-
-### 3. 建模、拓扑、UV、烘焙
-
-按计划调用工具。典型流程：
-
-1. `create_object` / `loft_mesh` / `mesh_bevel` / `mesh_mirror` 做中模；
-2. `create_layer` / `assign_layer` / `group_objects` 整理 Outliner 和图层；
-3. `mesh_retopo` / `mesh_reduce` / `mesh_snap` / `mesh_topology` 做低模与检查；
-4. `uv_project` / `uv_unfold` / `uv_layout` / `uv_inspect` 做 UV；
-5. `bake_map` 或 `bake_arnold_texture` 烘焙；
-6. `render_view` / `capture_viewport` / `compose_sheet` 出三视图或对比图；
-7. `save_scene` / `export_scene` 保存和导出。
-
-长任务可以用 `submit_job` 提交，用 `job_status` 轮询。
-
-### 4. 验收
-
-```json
-{
-  "name": "assignment_check",
-  "arguments": {
-    "config_path": "examples/honor_remote/assignment.json",
-    "low_meshes": ["低模对象名"],
-    "write_report": true
-  }
-}
-```
-
-`assignment_check` 检查：
-
-- `.mb/.ma`、FBX/OBJ 的签名/内容；
-- PNG 是否可读；
-- 低模面数、是否全 quad（配置要求时）；
-- 非流形边/顶点、UV 未映射面/UV 集；
-- 可选地把结果写入 `docs/acceptance.json`。
-
-最终视觉要求（例如参考图相似度）仍需人工确认，工具会在 `manual_review` 中提示。
+课程作业只是上述流程的一个使用场景：题目、命名、截图视角和提交格式应由调用方提供，不应写进 MCP 核心代码。
 
 ## 测试
 
 ```powershell
-cd D:\Maya-MCP
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-.\.venv\Scripts\python.exe tests\maya_smoke.py
+$env:PYTHONPATH = "D:\Maya-MCP"
+python -m pytest -q tests
+python tests/maya_smoke.py --year 2026
 ```
 
-当前实测结果（Maya 2026）：
-
-- `6 tests OK`
-- smoke：`PASS: MCP stdio -> Maya 2026: modeling, topology, UV, four PNG bake maps, render, export, assignments, jobs`
-- Maya 2022–2025：`UNTESTED`（本机未安装可用的 mayapy）
-- Arnold：本机 Arnold 许可不可用；`bake_arnold_texture` 会明确报错，native `bake_map` 可正常产出四张 PNG
-
-## 版本适配
-
-`maya_mcp.versions` 扫描 Maya 2022–2026 的注册表和常见安装目录，`list_maya_installations` 会返回每个版本的 `installed`、`mayapy` 和 `smoke_status`。
-
-- **Maya 2026**：已完成真实 smoke（建模、拓扑、UV、四张 bake PNG、渲染、导出、作业、job）。
-- **Maya 2022–2025**：已实现发现、`MAYA_MCP_MAYAPY`/`MAYA_MCP_VERSION` 选择、缺少工具时的 `UNTESTED`/能力降级提示；尚未在真实安装上验收。Maya 2022 的 Python 3.7 兼容性尤其需要在目标机器上补 smoke。
-- 不要在未实测版本上宣称“完全支持”；先跑 `tests/maya_smoke.py`。
+- 单元测试覆盖 bridge、commandPort、模式和工具 schema。
+- Maya 2026 smoke 覆盖 MCP stdio → 建模、拓扑、UV、bake、render、export、job。
+- Maya 2022–2025 会显示 `UNTESTED`，不会伪装通过。
+- Arnold 烘焙需要有效 Arnold 许可；无许可时应明确报错。
 
 ## 已知限制
 
-1. **GUI bridge / commandPort 需要手动开启**：GUI 模式需在 Maya Script Editor 执行 `start_gui()`；commandPort 模式需执行 `cmds.commandPort(...)` 并匹配 token。当前未做自动端口发现和多实例选择。
-2. **只有 Maya 2026 实测**；2022–2025 仍需目标机验证。
-3. **Arnold**：`bake_arnold_texture` 依赖 Arnold/MtoA 和有效许可；无许可时使用 native `bake_map`，并接受其质量/功能差异。
-4. **headless 截图**：`capture_viewport` 在 standalone 下回退为 Maya Software render，结果标记为 `fallback`；GUI 模式才是真实 viewport。
-5. **作业示例没有真实资产**：HONOR 示例中的参考图、学号、姓名和最终模型需要用户提供；`assignment_check` 会保持 `ready:false`，不会假装完成。
-6. **`execute_maya_code`** 默认关闭，且只允许白名单 `cmds` 调用；不要用它绕过作业验收。
+- **Maya 版本**：当前只在 Maya 2026 实测；2022–2025 的发现/降级逻辑存在，但未在本机验证。
+- **commandPort**：有单元测试和协议实现，但尚未在真实 Maya GUI 中完成 E2E；standalone `mayapy` 不能替代 GUI commandPort。
+- **Arnold**：Arnold license 不可用时 `bake_arnold_texture` 会失败；native bake 仍可使用。
+- **`execute_maya_code`**：默认关闭，仅允许白名单 `cmds` 调用；不要用它绕过项目根目录或安全策略。
+- **作业交付物**：本仓库不生成特定课程的模型、截图或报告；这些由 Agent 按用户提供的题目和资产完成。
 
-## 目录结构
+## 目录
 
 ```text
 maya_mcp/
-  assignment.py      作业配置、计划、验收
-  baking.py          native/Arnold 烘焙
-  bridge.py          Maya 内 TCP JSON bridge
-  capabilities.py    Maya 版本/插件能力探测
-  client.py          bridge 客户端
-  commandport.py     Maya 原生 commandPort 传输
-  composition.py     多图拼版
-  config.py          环境变量和 Settings
-  envelope.py        统一返回结构
-  handlers.py        Maya cmds 处理器
-  images.py          渲染/截图
-  jobs.py            长任务轮询
-  modeling.py        建模/NURBS/组织
-  policy.py          路径/代码/发布约束
-  protocol.py        帧协议
-  server.py          MCP stdio 服务与工具注册
-  session.py         GUI/headless 会话
-  topology.py        拓扑工具
-  uv.py              UV 工具
-  versions.py        Maya 2022–2026 发现
-  worker.py          mayapy worker
+  bridge.py        TCP JSON bridge
+  commandport.py   Maya commandPort transport
+  client.py        client-side connection errors
+  config.py        environment/settings
+  handlers.py      Maya-side commands
+  modeling.py      modeling tools
+  topology.py      topology tools
+  uv.py            UV tools
+  baking.py        bake tools
+  images.py        render/capture helpers
+  jobs.py          async jobs
+  server.py        FastMCP entrypoint
+  session.py       transport/session selection
+  versions.py      Maya version discovery
 tests/
-examples/
 docs/
 ```
 
-## 相关文档
+## 许可
 
-- [作业配置模板](examples/assignment.template.json)
-- [HONOR 示例](examples/honor_remote/README.md)
-- [通用需求说明](docs/REQUIREMENTS.md)
-- [Maya MCP 参考调研](docs/MAYA_REFERENCES.md)
-- [Git 提交计划](docs/PLAN.md)
-
-## 状态
-
-核心功能已完成到可运行、可 smoke 的阶段：44 个工具、Maya 2026 真实执行、12 个单元测试通过、完整 smoke 通过。`commandPort` 传输已实现并通过单元测试；下一步是把 Maya 2022–2025 的目标机 smoke 补齐，并做 commandPort 的多实例发现；在此之前，README 不把“多版本发现”写成“多版本已实测”。
+见仓库根目录 `LICENSE`（如存在）；未声明时按仓库默认策略处理。

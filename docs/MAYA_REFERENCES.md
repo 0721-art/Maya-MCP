@@ -54,4 +54,4 @@ MCP server ── commandPort ────► Maya GUI（无 Maya 侧包安装�
 
 ## 结论
 
-本项目借鉴了 `commandPort` 项目的工具分类、Maya 侧隔离、UV/烘焙专题和类型化工具思路，同时保留自有 bridge 作为默认传输，并实现了可选的 `commandPort` transport；这样既能先把真实 Maya 执行、作业配置和验收闭环跑通，也能在已有 commandPort 的 Maya 环境中零安装接入。
+本项目借鉴了 `commandPort` 项目的工具分类、Maya 侧隔离、UV/烘焙专题和类型化工具思路，同时保留自有 bridge 作为默认传输，并实现了可选的 `commandPort` transport；这样既能先把真实 Maya 执行、建模/拓扑/UV/烘焙闭环跑通，也能在已有 commandPort 的 Maya 环境中零安装接入。

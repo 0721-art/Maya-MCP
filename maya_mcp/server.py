@@ -5,7 +5,6 @@ from typing import Any, Literal, get_type_hints
 from mcp.server.fastmcp import FastMCP
 from PIL import Image
 
-from .assignment import AssignmentConfig, check_assignment, load_config, plan_assignment
 from .baking import TOOLS as BAKING_TOOLS
 from .client import BridgeError
 from .composition import compose_sheet as compose
@@ -53,7 +52,7 @@ def make_server(settings):
         finally:
             session.close(permanent=True)
 
-    mcp = FastMCP("Maya Assignment Modeling", lifespan=lifespan)
+    mcp = FastMCP("Maya MCP", lifespan=lifespan)
 
     def call(command, *, long=False, **params):
         try:
@@ -174,41 +173,6 @@ def make_server(settings):
     def execute_maya_code(code: str) -> dict[str, Any]:
         """Execute literal cmds calls for ls, listRelatives, objExists, polygon primitives, polyEvaluate and xform."""
         return call("execute_maya_code", code=code)
-
-    @mcp.tool()
-    def assignment_plan(config: AssignmentConfig | None = None,
-                        config_path: str | None = None) -> dict[str, Any]:
-        """Plan the configured modeling assignment and list expected outputs and missing inputs."""
-        try:
-            return success(plan_assignment(settings.root, load_config(settings.root, config, config_path)))
-        except (ValueError, OSError) as exc:
-            return failure("validation", str(exc))
-
-    @mcp.tool()
-    def assignment_check(config: AssignmentConfig | None = None, config_path: str | None = None,
-                         low_meshes: list[str] | None = None, write_report: bool = False,
-                         overwrite: bool = False) -> dict[str, Any]:
-        """Check actual deliverables and optional live low meshes. Optionally write docs/acceptance.json."""
-        def inspect_mesh(name, require_quads):
-            topology = call("mesh_topology", long=True, name=name)
-            if not topology["ok"]:
-                return {"name": name, "ok": False, "errors": [topology["error"]]}
-            uv = call("uv_inspect", long=True, name=name)
-            errors = [uv["error"]] if not uv["ok"] else []
-            if errors:
-                return {"name": name, "ok": False, "errors": errors}
-            data, mapped = topology["data"], uv["data"]
-            ok = (data["faces"] > 0 and not data["non_manifold_edges"] and not data["non_manifold_vertices"] and
-                  not mapped["unmapped_faces"] and bool(mapped["tiles"]) and
-                  (not require_quads or data["quads"] == data["faces"]))
-            return {"name": name, "ok": ok, "faces": data["faces"], "topology": data, "uv": mapped}
-
-        try:
-            definition = load_config(settings.root, config, config_path)
-            return success(check_assignment(settings.root, definition, inspect_mesh, low_meshes or [],
-                                            write_report, overwrite))
-        except (ValueError, OSError) as exc:
-            return failure("validation", str(exc))
 
     register_tools(mcp, call, MODELING_TOOLS)
     topology_tools = register_tools(mcp, call, TOPOLOGY_TOOLS, long=True)
