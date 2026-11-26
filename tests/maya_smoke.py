@@ -12,6 +12,10 @@ from PIL import Image
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from maya_mcp.versions import discover
 
 REQUIRED = {"get_maya_info", "get_scene_info", "get_object_info", "create_object",
@@ -31,7 +35,7 @@ async def smoke(year, executable):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    with tempfile.TemporaryDirectory(prefix="smoke-", dir=root / ".tmp") as folder:
+    with tempfile.TemporaryDirectory(prefix="smoke-", dir=root / ".tmp", ignore_cleanup_errors=True) as folder:
         env = {**os.environ, "MAYA_MCP_PORT": str(port), "MAYA_MCP_MODE": "headless",
                "MAYA_MCP_PROJECT_ROOT": folder, "MAYA_MCP_MAYAPY": str(executable),
                "MAYA_MCP_VERSION": str(year), "MAYA_MCP_ALLOW_CODE": "1"}
