@@ -87,29 +87,49 @@ MCP 客户端通过 stdio 与该进程通信。不要把日志写到 stdout；st
 
 ### 2. GUI 模式
 
-1. 打开 Maya，在 Script Editor 中启动 bridge（或使用下面的 commandPort 模式）。
-2. 设置 `MAYA_MCP_MODE=gui` 和对应的 `MAYA_MCP_HOST`/`MAYA_MCP_PORT`/`MAYA_MCP_TOKEN`。
+1. 打开 Maya，在 Script Editor（Python 标签页）中设置路径、非空 `MAYA_MCP_TOKEN` 与项目根目录，并启动 bridge：
+
+```python
+import os, sys
+if r"D:\Maya-MCP" not in sys.path:
+    sys.path.append(r"D:\Maya-MCP")
+os.environ["MAYA_MCP_TOKEN"] = "your-token"
+os.environ["MAYA_MCP_PROJECT_ROOT"] = r"D:\MayaProjects"
+os.environ["MAYA_MCP_PORT"] = "9876"
+
+from maya_mcp.bridge import start_gui
+start_gui()
+```
+
+2. 在宿主侧设置 `MAYA_MCP_MODE=gui` 和一致的 `MAYA_MCP_HOST`/`MAYA_MCP_PORT`/`MAYA_MCP_TOKEN`/`MAYA_MCP_PROJECT_ROOT`。
 3. 启动 `python -m maya_mcp.server`，再让 MCP 客户端连接。
 
 ### 3. commandPort 模式
 
-在 Maya 中打开一个 commandPort，例如：
+在 Maya Script Editor（Python 标签页）中设置与宿主一致的 `MAYA_MCP_TOKEN`（推荐同时设置 `MAYA_MCP_PROJECT_ROOT`），并打开一个启用 `echoOutput=True` 的 Python `commandPort`：
 
 ```python
+import os
 import maya.cmds as cmds
-cmds.commandPort(name="127.0.0.1:7001", sourceType="python")
+
+os.environ["MAYA_MCP_TOKEN"] = "your-token"
+os.environ["MAYA_MCP_PROJECT_ROOT"] = r"D:\MayaProjects"
+cmds.commandPort(name="127.0.0.1:7001", sourceType="python", echoOutput=True, bufferSize=65536)
 ```
 
-然后：
+然后在宿主侧启动 MCP 服务：
 
 ```powershell
 $env:MAYA_MCP_MODE = "commandport"
 $env:MAYA_MCP_COMMAND_PORT = "7001"
 $env:MAYA_MCP_TOKEN = "your-token"
+$env:MAYA_MCP_PROJECT_ROOT = "D:\MayaProjects"
 python -m maya_mcp.server
 ```
 
-commandPort 模式不启动 worker；它直接连接 Maya 的 line socket。Maya 侧需要能导入 `maya_mcp.commandport.dispatch`，或由现有 bridge 注入 dispatch。
+commandPort 模式不启动 worker，也不需要在 Maya 侧 `pip install` 任何包；宿主每次发送一条单行 Python 表达式，由 Maya 自动将本仓库目录加入 `sys.path` 并调用 `maya_mcp.commandport.dispatch`。认证采用 fail-closed：Maya 侧未设置非空 `MAYA_MCP_TOKEN`（或兼容变量 `MAYA_MCP_COMMAND_TOKEN`）时请求会被拒绝。
+
+> **安全提示**：Maya 原生 `commandPort` 在进入 `dispatch()` 之前即会直接执行收到的任意 Python 代码，因此 `MAYA_MCP_TOKEN` 仅提供应用层防误连与会话匹配，不能阻止本机其他进程直接向 `127.0.0.1:7001` 执行任意代码。需要更强边界隔离时，请使用默认的本地 TCP JSON bridge 或 `mayapy` headless 模式。
 
 ## MCP 客户端配置
 
@@ -198,7 +218,7 @@ python tests/maya_smoke.py --year 2026
 ## 已知限制
 
 - **Maya 版本**：当前只在 Maya 2026 实测；2022–2025 的发现/降级逻辑存在，但未在本机验证。
-- **commandPort**：有单元测试和协议实现，但尚未在真实 Maya GUI 中完成 E2E；standalone `mayapy` 不能替代 GUI commandPort。
+- **commandPort**：有单元测试（含真实脚本求值、fail-closed 认证与协议边界）和协议实现，但尚未在真实 Maya GUI 中完成 E2E；standalone `mayapy` 不能替代 GUI commandPort。此外原生 `commandPort` 本身允许本机任意进程直接执行 Python，需更强隔离时应优先使用默认 TCP JSON bridge。
 - **Arnold**：Arnold license 不可用时 `bake_arnold_texture` 会失败；native bake 仍可使用。
 - **`execute_maya_code`**：默认关闭，仅允许白名单 `cmds` 调用；不要用它绕过项目根目录或安全策略。
 - **作业交付物**：本仓库不生成特定课程的模型、截图或报告；这些由 Agent 按用户提供的题目和资产完成。
@@ -207,22 +227,35 @@ python tests/maya_smoke.py --year 2026
 
 ```text
 maya_mcp/
+  __init__.py      package metadata
+  baking.py        bake tools (Transfer Maps, projected AO/curvature, Arnold EXR)
   bridge.py        TCP JSON bridge
-  commandport.py   Maya commandPort transport
-  client.py        client-side connection errors
-  config.py        environment/settings
-  handlers.py      Maya-side commands
-  modeling.py      modeling tools
-  topology.py      topology tools
-  uv.py            UV tools
-  baking.py        bake tools
-  images.py        render/capture helpers
-  jobs.py          async jobs
-  server.py        FastMCP entrypoint
-  session.py       transport/session selection
-  versions.py      Maya version discovery
+  capabilities.py  Maya command/plugin capability probing
+  client.py        host-side TCP bridge client and BridgeError
+  commandport.py   Maya native commandPort transport
+  composition.py   multi-image grid sheet composer
+  config.py        environment/settings and Maya child env
+  envelope.py      structured {ok, data, error, warnings, artifacts} helpers
+  handlers.py      Maya-side scene/object/render/save/export commands
+  images.py        render, viewport capture and UV snapshot helpers
+  jobs.py          bounded async job runner and status polling
+  modeling.py      polygon and NURBS modeling tools
+  policy.py        project root path sandbox and AST-only cmds allowlist
+  protocol.py      length-limited strict finite-JSON framing
+  server.py        FastMCP stdio entrypoint (42 tools)
+  session.py       transport/session selection and headless worker lifecycle
+  topology.py      topology inspection, retopo, reduce, rebuild and snap
+  uv.py            UV projection, unfold, layout, sets and inspection
+  versions.py      Maya 2022-2026 installation discovery
+  worker.py        mayapy standalone main-thread bridge worker
 tests/
+  test_bridge.py        bridge, framing, path/code policy and handler tests
+  test_commandport.py   commandPort framing, auth, root sandbox and socket tests
+  test_server.py        42-tool schema, MayaSession routing and smoke CLI tests
+  maya_smoke.py         end-to-end MCP stdio smoke against real Maya (--year)
 docs/
+  REQUIREMENTS.md       product scope and acceptance criteria
+  MAYA_REFERENCES.md    survey of Maya MCP designs and tradeoffs
 ```
 
 ## 许可

@@ -1,4 +1,4 @@
-"""Compose real files produced by Maya into a submission image."""
+"""Compose real files produced by Maya into a composite image."""
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -12,18 +12,21 @@ def compose_sheet(root, rows, path, overwrite=False):
     if not 1 <= len(rows) <= 8 or not 1 <= len(rows[0]) <= 8 or any(len(r) != len(rows[0]) for r in rows):
         raise ValueError("Use a rectangular grid of up to 8 rows and 8 columns")
     sources = [[project_path(root, item) for item in row] for row in rows]
-    target = output_path(root, path, {".png"}, overwrite)
-    if any(target == source for row in sources for source in row):
+    target_candidate = project_path(root, path)
+    if any(target_candidate == source for row in sources for source in row):
         raise ValueError("The sheet output must differ from input paths")
     sizes = []
     for row in sources:
         for source in row:
             if source.suffix.lower() not in {".png", ".jpg", ".jpeg"}:
                 raise ValueError(f"Expected a PNG or JPEG input: {source}")
+            if not source.is_file():
+                raise ValueError(f"Input image does not exist: {source}")
             with Image.open(source) as picture:
                 if picture.format not in {"PNG", "JPEG"} or max(picture.size) > 4096:
                     raise ValueError(f"Expected a PNG/JPEG no larger than 4096 pixels per side: {source}")
                 sizes.append(picture.size)
+    target = output_path(root, path, {".png"}, overwrite)
     cell_width = max(w for w, _ in sizes)
     cell_height = max(h for _, h in sizes)
     width, height = cell_width * len(rows[0]), cell_height * len(rows)

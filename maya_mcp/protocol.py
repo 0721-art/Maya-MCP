@@ -11,14 +11,18 @@ def encode(message):
     return data
 
 
+def loads_strict(text):
+    message = json.loads(text, parse_constant=_invalid_number, parse_float=_parse_float)
+    if not isinstance(message, dict):
+        raise ValueError("Bridge frame must contain a JSON object")
+    return message
+
+
 def read_frame(stream):
     line = stream.readline(FRAME_LIMIT + 1)
     if not line or not line.endswith(b"\n") or len(line) > FRAME_LIMIT:
         raise ValueError("Missing, incomplete or oversized bridge frame")
-    message = json.loads(line.decode("utf-8"), parse_constant=_invalid_number, parse_float=_parse_float)
-    if not isinstance(message, dict):
-        raise ValueError("Bridge frame must contain a JSON object")
-    return message
+    return loads_strict(line.decode("utf-8"))
 
 
 def _invalid_number(value):

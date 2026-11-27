@@ -42,7 +42,7 @@ MCP server ── commandPort ────► Maya GUI（无 Maya 侧包安装�
 代价：
 
 - GUI 模式需要在 Maya Script Editor 里运行 `maya_mcp.bridge.start_gui()`；
-- `commandPort` 模式也需要显式开启 `cmds.commandPort(...)`，并设置匹配的 token；
+- `commandPort` 模式也需要显式开启 `cmds.commandPort(..., sourceType="python", echoOutput=True)`，并在 Maya 侧设置匹配的 `MAYA_MCP_TOKEN`（fail-closed）；同时需注意原生 `commandPort` 在进入 `dispatch()` 前即直接执行本机发来的 Python，`MAYA_MCP_TOKEN` 仅用于应用层防误连，不能替代默认 TCP JSON bridge 的协议隔离；
 - Maya 2022 的 Python 3.7 兼容性需要在目标机补 smoke；
 - 当前没有自动发现多个 GUI Maya 实例；commandPort 也只支持显式端口，headless 由 server 启动一个 worker。
 

@@ -23,7 +23,9 @@ def registry_root(year):
     for hive in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
         try:
             with winreg.OpenKey(hive, key, 0, winreg.KEY_READ | winreg.KEY_WOW64_64KEY) as handle:
-                return Path(winreg.QueryValueEx(handle, "MAYA_INSTALL_LOCATION")[0])
+                value = winreg.QueryValueEx(handle, "MAYA_INSTALL_LOCATION")[0]
+                if isinstance(value, str) and value.strip():
+                    return Path(value)
         except OSError:
             continue
     return None
@@ -39,7 +41,7 @@ def discover():
         roots.extend([Path("/usr/autodesk"), Path("/Applications/Autodesk")])
     path_exe = shutil.which(executable)
     explicit = env.get("MAYA_MCP_MAYAPY")
-    explicit_year = version_from_path(env.get("MAYA_MCP_VERSION")) or version_from_path(explicit)
+    explicit_year = version_from_path(explicit) or version_from_path(env.get("MAYA_MCP_VERSION"))
     location = env.get("MAYA_LOCATION")
     found = {}
     for year in YEARS:

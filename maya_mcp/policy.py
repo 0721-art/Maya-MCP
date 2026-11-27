@@ -1,5 +1,7 @@
 import ast
+import errno
 import os
+import shutil
 from pathlib import Path
 
 
@@ -9,14 +11,16 @@ def output_path(root, name, extensions, overwrite=False):
     path = project_path(root, name)
     if path.suffix.lower() not in extensions:
         raise ValueError(f"Expected a file with suffix in {sorted(extensions)}")
-    if path.exists() and (not overwrite or not path.is_file()):
+    if (path.exists() or path.is_symlink()) and (not overwrite or path.is_symlink() or not path.is_file()):
         raise ValueError(f"Output already exists: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 
 def project_path(root, name):
-    root = root.resolve()
+    if not isinstance(name, str) or not name or "\x00" in name:
+        raise ValueError("File path must be a nonempty string")
+    root = Path(root).resolve()
     raw = Path(name)
     if ":" in str(raw)[len(raw.drive):]:
         raise ValueError("File streams are not valid project paths")
@@ -39,6 +43,15 @@ def publish_file(source, target, overwrite=False):
             os.link(str(source), str(target))
         except FileExistsError as exc:
             raise ValueError(f"Output already exists: {target}") from exc
+        except OSError as exc:
+            if exc.errno not in {errno.EXDEV, errno.EPERM, errno.EOPNOTSUPP, errno.ENOSYS, errno.EACCES}:
+                raise
+            try:
+                fd = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+            except FileExistsError as exists_exc:
+                raise ValueError(f"Output already exists: {target}") from exists_exc
+            with os.fdopen(fd, "wb") as dst, source.open("rb") as src:
+                shutil.copyfileobj(src, dst)
 
 
 def run_commands(code, commands):

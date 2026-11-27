@@ -1,1 +1,1 @@
-"""Maya 2026 modeling tools over MCP."""
+"""General-purpose MCP server and bridge for Autodesk Maya."""

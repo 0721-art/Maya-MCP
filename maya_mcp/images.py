@@ -26,9 +26,11 @@ def view_camera(cmds, camera, width, height, frame_shapes=()):
             raise ValueError("Use an exact camera name or preset")
         matches = cmds.ls(camera, exactType="camera", long=True) or []
         if not matches:
-            matches = [shape for shape in
-                       cmds.listRelatives(camera, shapes=True, fullPath=True) or []
-                       if cmds.nodeType(shape) == "camera"]
+            transforms = cmds.ls(camera, exactType="transform", long=True) or []
+            if len(transforms) == 1:
+                matches = [shape for shape in
+                           cmds.listRelatives(transforms[0], shapes=True, fullPath=True) or []
+                           if cmds.nodeType(shape) == "camera"]
         if len(matches) != 1:
             raise ValueError(f"Expected one camera or preset, got {camera!r}")
         yield matches[0]
@@ -52,10 +54,13 @@ def view_camera(cmds, camera, width, height, frame_shapes=()):
         offsets = [om.MVector(*point) - center for point in product(*zip(box[:3], box[3:]))]
         span_x = 2 * max(abs(v * right) for v in offsets)
         span_y = 2 * max(abs(v * up) for v in offsets)
-        position = center + forward * (30 + 3 * max(v.length() for v in offsets))
+        distance = 30 + 3 * max(v.length() for v in offsets)
+        position = center + forward * distance
         cmds.xform(node, worldSpace=True, translation=tuple(position))
         cmds.setAttr(shape + ".orthographicWidth", 1.16 * max(span_x, span_y * width / height, 0.01))
         cmds.setAttr(shape + ".filmFit", 1)
+        cmds.setAttr(shape + ".farClipPlane", max(10000.0, distance * 4.0))
+        cmds.setAttr(shape + ".nearClipPlane", max(0.01, min(0.1, distance * 1e-4)))
         yield shape
     finally:
         cmds.delete(node)
@@ -161,8 +166,9 @@ def uv_snapshot(cmds, path, nodes, size, uv_set=None, bounds=None, overwrite=Fal
     dimensions(size, size)
     options = {"uvSetName": uv_set} if uv_set is not None else {}
     if bounds is not None:
-        if (len(bounds) != 4 or any(not math.isfinite(v) for v in bounds) or
-                bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
+        if (len(bounds) != 4
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in bounds)
+                or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
             raise ValueError("Bounds must be [min_u, min_v, max_u, max_v] with positive width and height")
         options.update(zip(("uMin", "vMin", "uMax", "vMax"), bounds))
     selection = cmds.ls(selection=True, long=True) or []

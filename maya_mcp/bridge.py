@@ -1,7 +1,8 @@
 import hmac
 import socketserver
+import subprocess
 import time
-from concurrent.futures import Future, TimeoutError
+from concurrent.futures import Future, TimeoutError as FutureTimeoutError
 from threading import BoundedSemaphore, Lock, Thread
 
 from .config import Settings
@@ -84,11 +85,14 @@ class Bridge(socketserver.ThreadingTCPServer):
                 return
             try:
                 if time.monotonic() - start >= timeout_ms / 1000:
-                    raise TimeoutError("Maya main-thread queue deadline expired")
+                    raise FutureTimeoutError("Maya main-thread queue deadline expired")
                 result = self.handlers[command](**params)
                 envelope = success(result)
             except Exception as exc:
                 future.set_exception(exc)
+            except BaseException as exc:
+                future.set_exception(RuntimeError(f"Interrupted: {type(exc).__name__}"))
+                raise
             else:
                 future.set_result((result, envelope))
             finally:
@@ -101,8 +105,10 @@ class Bridge(socketserver.ThreadingTCPServer):
             return self.error(request_id, "internal", str(exc))
         try:
             result, envelope = future.result(timeout=max(0, timeout_ms / 1000 - (time.monotonic() - start)))
-        except TimeoutError:
-            if future.cancel():
+        except (FutureTimeoutError, TimeoutError, subprocess.TimeoutExpired) as exc:
+            if future.done():
+                message = str(exc) or "Maya command deadline expired"
+            elif future.cancel():
                 self.command_lock.release()
                 message = "Maya main-thread queue deadline expired"
             else:

@@ -1,5 +1,6 @@
 """Run with the host Python that has the project's MCP SDK installed."""
 
+import argparse
 import asyncio
 import os
 import socket
@@ -153,13 +154,30 @@ async def smoke(year, executable):
     print(f"PASS: MCP stdio -> Maya {year}: modeling, topology, UV, four PNG bake maps, render, export, jobs")
 
 
-if __name__ == "__main__":
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="Run Maya MCP stdio smoke tests.")
+    parser.add_argument(
+        "--year",
+        type=int,
+        choices=tuple(range(2022, 2027)),
+        default=None,
+        help="Test only one Maya release year (2022-2026).",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
     versions = discover()
+    years = [args.year] if args.year is not None else list(range(2022, 2027))
+    if args.year is not None and args.year not in versions:
+        print(f"UNTESTED: Maya {args.year} mayapy not found")
+        return 2
     if not versions:
         print("UNTESTED: no Maya 2022-2026 mayapy found")
-        sys.exit(2)
+        return 2
     failed = []
-    for year in range(2022, 2027):
+    for year in years:
         if year in versions:
             try:
                 asyncio.run(smoke(year, versions[year]))
@@ -170,4 +188,9 @@ if __name__ == "__main__":
             print(f"UNTESTED: Maya {year} mayapy not found")
     if failed:
         print(f"FAIL: Maya smoke versions {failed}")
-        sys.exit(1)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

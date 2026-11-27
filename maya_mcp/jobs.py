@@ -2,7 +2,7 @@
 
 from collections import OrderedDict
 from concurrent.futures import Future
-from inspect import signature
+from inspect import Parameter, signature
 from threading import Lock, Thread
 from uuid import uuid4
 
@@ -21,11 +21,16 @@ class MayaJobs:
         tool = self.tools.get(name)
         if tool is None:
             return failure("validation", f"Pollable tools: {', '.join(sorted(self.tools))}")
+        if not isinstance(arguments, dict):
+            return failure("validation", "Job arguments must be an object")
         try:
             sig = signature(tool)
             bound = sig.bind(**arguments)
-            values = {key: TypeAdapter(sig.parameters[key].annotation).validate_python(value)
-                      for key, value in bound.arguments.items()}
+            values = {
+                key: (TypeAdapter(sig.parameters[key].annotation).validate_python(value)
+                      if sig.parameters[key].annotation is not Parameter.empty else value)
+                for key, value in bound.arguments.items()
+            }
         except (TypeError, ValueError) as exc:
             return failure("validation", str(exc))
 
@@ -46,7 +51,11 @@ class MayaJobs:
                 result = failure("internal", str(exc))
             future.set_result(result)
 
-        Thread(target=run, name=f"maya-mcp-job-{job_id[:8]}", daemon=True).start()
+        try:
+            Thread(target=run, name=f"maya-mcp-job-{job_id[:8]}", daemon=True).start()
+        except Exception as exc:
+            future.set_result(failure("internal", str(exc)))
+            raise
         return success({"job_id": job_id, "state": "queued"})
 
     def status(self, job_id):

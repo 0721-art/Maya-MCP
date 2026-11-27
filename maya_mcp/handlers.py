@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from pathlib import Path
@@ -37,11 +38,12 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
     def get_scene_info(self):
         c = self.cmds
         nodes = c.ls(dag=True, long=True, type="transform") or []
-        cameras = set(c.listCameras() or [])
+        cam_shapes = c.ls(type="camera", long=True) or []
+        cameras = set(c.listRelatives(cam_shapes, parent=True, fullPath=True) or []) if cam_shapes else set()
         meshes = c.ls(type="mesh", noIntermediate=True, long=True) or []
         return {**self.get_maya_info(), "selection": c.ls(selection=True, long=True) or [],
                 "objects": [{"path": node, "parent": node.rsplit("|", 1)[0] or None}
-                            for node in nodes if node.rsplit("|", 1)[-1] not in cameras],
+                            for node in nodes if node not in cameras],
                 "layers": {layer: c.editDisplayLayerMembers(layer, query=True, fullNames=True) or []
                            for layer in c.ls(type="displayLayer") or []},
                 "mesh_count": len(meshes),
@@ -88,7 +90,7 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
         self._name(name)
         parent = self._node(parent) if parent else None
         layer = self._node(layer, "displayLayer") if layer else None
-        if any(v <= 0 for v in finite_vector(size)) or not 3 <= segments <= 256:
+        if any(v <= 0 for v in finite_vector(size)) or type(segments) is not int or not 3 <= segments <= 256:
             raise ValueError("Provide three positive dimensions and 3–256 segments")
         finite_vector(translation)
         finite_vector(rotation)
@@ -127,10 +129,13 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
         for vector in (translation, rotation, scale):
             if vector is not None:
                 finite_vector(vector)
-        if target_parent and node.rsplit("|", 1)[0] != target_parent:
-            identifier = c.ls(node, uuid=True)[0]
-            c.parent(node, target_parent)
-            node = c.ls(identifier, long=True)[0]
+        if target_parent:
+            if target_parent == node or target_parent.startswith(node + "|"):
+                raise ValueError("Cannot parent a transform to itself or one of its descendants")
+            if node.rsplit("|", 1)[0] != target_parent:
+                identifier = c.ls(node, uuid=True)[0]
+                c.parent(node, target_parent)
+                node = c.ls(identifier, long=True)[0]
         if new_name is not None:
             renamed = c.rename(node, new_name)
             parent_path = node.rsplit("|", 1)[0]
@@ -148,28 +153,40 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
         return self.get_object_info(node)
 
     def delete_object(self, names):
-        targets = [self._node(name) for name in names]
-        if targets:
-            self.cmds.delete(targets)
+        targets = list(dict.fromkeys(self._node(name) for name in names))
+        top_level = [node for node in targets
+                     if not any(node.startswith(other + "|") for other in targets if other != node)]
+        if top_level:
+            self.cmds.delete(top_level)
         return {"deleted": targets}
 
     def set_material(self, name, material, color, roughness=0.5):
         c = self.cmds
         node = self._node(name)
         self._name(material)
-        if len(color) != 3 or any(not 0 <= v <= 1 for v in color) or not 0 <= roughness <= 1:
+        finite_vector(color)
+        if (any(not 0 <= v <= 1 for v in color)
+                or type(roughness) not in (int, float)
+                or not math.isfinite(roughness) or not 0 <= roughness <= 1):
             raise ValueError("RGB channels and roughness must be between 0 and 1")
         shader = c.shadingNode("blinn", asShader=True, name=material)
-        engine = c.sets(renderable=True, noSurfaceShader=True, empty=True, name=shader + "SG")
-        c.connectAttr(shader + ".outColor", engine + ".surfaceShader", force=True)
-        c.setAttr(shader + ".color", *color, type="double3")
-        c.setAttr(shader + ".eccentricity", roughness)
-        c.sets(node, edit=True, forceElement=engine)
+        engine = None
+        try:
+            engine = c.sets(renderable=True, noSurfaceShader=True, empty=True, name=shader + "SG")
+            c.connectAttr(shader + ".outColor", engine + ".surfaceShader", force=True)
+            c.setAttr(shader + ".color", *color, type="double3")
+            c.setAttr(shader + ".eccentricity", roughness)
+            c.sets(node, edit=True, forceElement=engine)
+        except Exception:
+            for created in (engine, shader):
+                if created and c.objExists(created):
+                    c.delete(created)
+            raise
         return {"name": node, "material": shader, "shading_group": engine}
 
     def create_layer(self, name, names=(), visible=True, color=0):
         self._name(name)
-        if not 0 <= color <= 31:
+        if type(color) is not int or not 0 <= color <= 31:
             raise ValueError("Display layer color must be between 0 and 31")
         nodes = [self._node(node) for node in names]
         c = self.cmds
