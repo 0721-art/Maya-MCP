@@ -250,8 +250,6 @@ tests/
   test_commandport.py   commandPort framing, auth, root sandbox and socket tests
   test_server.py        42-tool schema, MayaSession routing and smoke CLI tests
   maya_smoke.py         end-to-end MCP stdio smoke against real Maya (--year)
-docs/
-  REQUIREMENTS.md       product scope and acceptance criteria
 ```
 
 ## 许可
