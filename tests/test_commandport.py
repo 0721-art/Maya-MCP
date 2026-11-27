@@ -274,7 +274,8 @@ class CommandPortTests(unittest.TestCase):
 
             with patch.dict(os.environ, {"MAYA_MCP_TOKEN": "secret-令牌",
                                          "MAYA_MCP_PROJECT_ROOT": project_dir,
-                                         "MAYA_MCP_ALLOW_CODE": "1"}, clear=False), \
+                                         "MAYA_MCP_ALLOW_CODE": "1",
+                                         "MAYA_MCP_ALLOW_SCRIPT": "0"}, clear=False), \
                  patch.dict(sys.modules, _fake_maya_modules()):
                 allowed = json.loads(dispatch(encode_req({
                     **base_req, "type": "execute_maya_code",
@@ -282,6 +283,26 @@ class CommandPortTests(unittest.TestCase):
                 })))
                 self.assertTrue(allowed["ok"])
                 self.assertEqual(allowed["data"], {"results": [False]})
+                # execute_script stays disabled unless MAYA_MCP_ALLOW_SCRIPT=1
+                script_denied = json.loads(dispatch(encode_req({
+                    **base_req, "type": "execute_script",
+                    "params": {"code": "result = 42"},
+                })))
+                self.assertFalse(script_denied["ok"])
+                self.assertEqual(script_denied["error"]["kind"], "validation")
+                self.assertIn("MAYA_MCP_ALLOW_SCRIPT", script_denied["error"]["message"])
+
+            with patch.dict(os.environ, {"MAYA_MCP_TOKEN": "secret-令牌",
+                                         "MAYA_MCP_PROJECT_ROOT": project_dir,
+                                         "MAYA_MCP_ALLOW_SCRIPT": "1"}, clear=False), \
+                 patch.dict(sys.modules, _fake_maya_modules()):
+                script_ok = json.loads(dispatch(encode_req({
+                    **base_req, "type": "execute_script",
+                    "params": {"code": "import math\ntotal = sum(range(5))\nprint('hi')\nresult = {'sum': total, 'pi': round(math.pi, 2)}"},
+                })))
+                self.assertTrue(script_ok["ok"])
+                self.assertEqual(script_ok["data"]["result"], {"sum": 10, "pi": 3.14})
+                self.assertEqual(script_ok["data"]["stdout"].strip(), "hi")
 
     def test_resolve_root_requires_maya_pin_for_non_cwd_roots(self):
         with tempfile.TemporaryDirectory() as other:

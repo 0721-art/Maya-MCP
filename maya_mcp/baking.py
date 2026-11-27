@@ -9,8 +9,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Optional
 
-from .capabilities import has_command, require_plugin, transfer_command
-from .images import dimensions, publish_png
+from .capabilities import has_command, is_arnold_license_error, require_plugin, transfer_command
+from .images import _temp_base, dimensions, publish_png
 from .policy import publish_file
 from .topology import mesh_dag
 from .uv import current_uv_set, preserve_selection
@@ -20,7 +20,8 @@ class Baking:
     def bake_map(self, source: str, target: str, kind: str, path: str, size: int = 512,
                  uv_set: Optional[str] = None, max_distance: Optional[float] = None,
                  ao_samples: int = 16, ao_distance: Optional[float] = None,
-                 curvature_scale: Optional[float] = None, overwrite: bool = False):
+                 curvature_scale: Optional[float] = None, overwrite: bool = False,
+                 allow_outside_root: bool = False):
         """Bake a high mesh to a low mesh's 1001 UV tile as a PNG. Distances use Maya world units."""
         from .handlers import written
 
@@ -47,9 +48,9 @@ class Baking:
         if type(ao_samples) is not int or not 1 <= ao_samples <= 64:
             raise ValueError("Use an AO sample count in 1-64")
 
-        output = self._output(path, {".png"}, overwrite)
+        output = self._output(path, {".png"}, overwrite, allow_outside_root=allow_outside_root)
         stats, warnings = {}, []
-        with TemporaryDirectory(prefix="bake-", dir=output.parent) as folder:
+        with TemporaryDirectory(prefix="bake-", dir=_temp_base(output, root=self.settings.root)) as folder:
             image = Path(folder) / "map.png"
             if kind in {"normal", "color"}:
                 engine = transfer_command(c)
@@ -76,8 +77,9 @@ class Baking:
                 "uv_set": uv_set, "resolution": size, **stats, "warnings": warnings}
 
     def bake_arnold_texture(self, name: str, kind: str, path: str, size: int = 512,
-                            uv_set: Optional[str] = None, aa_samples: int = 3, overwrite: bool = False):
-        """Bake AO, curvature or assigned material in the mesh's 1001 UV tile as an Arnold EXR."""
+                            uv_set: Optional[str] = None, aa_samples: int = 3, overwrite: bool = False,
+                            allow_outside_root: bool = False):
+        """Bake AO, curvature or assigned material in the mesh's 1001 UV tile as an Arnold EXR (requires an Arnold license)."""
         from .handlers import written
 
         c = self.cmds
@@ -89,20 +91,30 @@ class Baking:
         uv = self.uv_inspect(node, uv_set)
         if uv["unmapped_faces"] or uv["tiles"] != [{"u": 0, "v": 0, "udim": 1001}]:
             raise ValueError("Arnold Render to Texture requires complete UVs in tile 1001")
-        output = self._output(path, {".exr"}, overwrite, create_parent=False)
+        output = self._output(path, {".exr"}, overwrite, create_parent=False,
+                              allow_outside_root=allow_outside_root)
         require_plugin(c, "mtoa")
         if not has_command(c, "arnoldRenderToTexture"):
             raise ValueError("The loaded MtoA does not provide arnoldRenderToTexture")
         output.parent.mkdir(parents=True, exist_ok=True)
 
-        with TemporaryDirectory(prefix="arnold-", dir=output.parent) as folder, preserve_selection(c):
+        with TemporaryDirectory(prefix="arnold-", dir=_temp_base(output, root=self.settings.root)) as folder, preserve_selection(c):
             shader = c.shadingNode(shaders[kind], asShader=True) if shaders[kind] else None
             try:
                 c.select(node, replace=True)
                 # Unit UVs are bounded above, so Arnold writes a single image.
-                c.arnoldRenderToTexture(folder=folder, resolution=size, aa_samples=aa_samples,
-                                        uv_set=uv["uv_set"], all_udims=False, udims="1001",
-                                        shader=shader or "")
+                try:
+                    c.arnoldRenderToTexture(folder=folder, resolution=size, aa_samples=aa_samples,
+                                            uv_set=uv["uv_set"], all_udims=False, udims="1001",
+                                            shader=shader or "")
+                except RuntimeError as exc:
+                    if is_arnold_license_error(str(exc)):
+                        raise RuntimeError(
+                            f"Arnold license state unavailable ({exc}); no image was published. "
+                            "Arnold batch/headless licensing is controlled by the environment; "
+                            "use native bake_map for PNG normal/color/ao/curvature baking without Arnold."
+                        ) from exc
+                    raise
                 files = list(Path(folder).glob("*.exr"))
                 if len(files) != 1:
                     raise RuntimeError(f"Expected a single Arnold EXR, got {len(files)}")
@@ -139,7 +151,10 @@ def verify_exr(path, size, checker):
             raise RuntimeError("Oversized Arnold EXR header")
         license_state = header.get(b"arnold/license_state", b"").lower().rstrip(b"\0")
         if license_state in {b"invalid", b"unlicensed", b"failed"}:
-            raise RuntimeError(f"Arnold license state {license_state.decode()}; no image was published")
+            raise RuntimeError(
+                f"Arnold license state {license_state.decode()}; no image was published. "
+                "Use native bake_map for PNG baking when an Arnold batch license is unavailable."
+            )
         x0, y0, x1, y1 = struct.unpack("<iiii", header.get(b"dataWindow", b""))
         if (x1 - x0 + 1, y1 - y0 + 1) != (size, size):
             raise RuntimeError("Arnold output has unexpected pixel dimensions")

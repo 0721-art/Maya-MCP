@@ -40,7 +40,7 @@ class Topology:
             result["symmetry"] = _symmetry(mesh.getPoints(om.MSpace.kWorld), symmetry_axis, tolerance)
         return result
 
-    def mesh_reduce(self, source: str, name: str, target_faces: int):
+    def mesh_reduce(self, source: str, name: str, target_faces: int, brief: bool = False):
         """Duplicate a mesh and reduce polygon count. Returns the actual face count."""
         source, shape = self._mesh(source)
         c = self.cmds
@@ -52,13 +52,13 @@ class Topology:
                          keepQuadsWeight=1, keepBorder=True, keepMapBorder=True, preserveTopology=True,
                          replaceOriginal=True, constructionHistory=False)
             c.delete(node, constructionHistory=True)
-            result = self.get_object_info(node)
+            result = self.get_object_info(node, brief=brief)
             if not 0 < result["faces"] < current:
                 raise ValueError("Maya could not reduce this mesh while preserving topology and borders")
             return {**result, "algorithm": "polyReduce", "target_faces": target_faces}
 
     def mesh_retopo(self, source: str, name: str, target_faces: int, symmetry: bool = False,
-                    allow_reduce_fallback: bool = True):
+                    allow_reduce_fallback: bool = True, brief: bool = False):
         """Generate a quad-oriented low mesh with polyRetopo, optionally degrading to polyReduce."""
         source, shape = self._mesh(source)
         c = self.cmds
@@ -72,7 +72,7 @@ class Topology:
                     c.polyRetopo(node, targetFaceCount=target_faces, preprocessMesh=True,
                                  symmetry=symmetry, replaceOriginal=True, constructionHistory=False)
                     c.delete(node, constructionHistory=True)
-                    result = self.get_object_info(node)
+                    result = self.get_object_info(node, brief=brief)
                     if not 0 < result["faces"] < before:
                         raise RuntimeError("polyRetopo did not produce a lower face count")
                     return {**result, "algorithm": "polyRetopo", "target_faces": target_faces}
@@ -80,10 +80,11 @@ class Topology:
                 reason = str(exc)
         if not allow_reduce_fallback:
             raise ValueError(reason)
-        result = self.mesh_reduce(source, name, target_faces)
+        result = self.mesh_reduce(source, name, target_faces, brief=brief)
         return {**result, "warnings": [f"{reason}. polyReduce preserves topology where possible and may leave triangles."]}
 
-    def mesh_rebuild(self, source: str, name: str, edge_length: float, max_triangles: int = 100000):
+    def mesh_rebuild(self, source: str, name: str, edge_length: float, max_triangles: int = 100000,
+                     brief: bool = False):
         """Rebuild a duplicate with polyRemesh using a world-space maximum edge length."""
         c = self.cmds
         if not has_command(c, "polyRemesh"):
@@ -93,7 +94,7 @@ class Topology:
         with self._disposable_mesh(self._mesh(source)[0], name) as node:
             c.polyRemesh(node, maxEdgeLength=edge_length, maxTriangleCount=max_triangles,
                          useRelativeValues=False, worldSpace=True, constructionHistory=False)
-            return {**self.get_object_info(node), "algorithm": "polyRemesh"}
+            return {**self.get_object_info(node, brief=brief), "algorithm": "polyRemesh"}
 
     def mesh_snap(self, name: str, target: str, vertices: List[int],
                   max_distance: Optional[float] = None):

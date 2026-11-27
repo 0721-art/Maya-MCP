@@ -219,12 +219,22 @@ def dispatch(request_b64: str) -> str:
         req_timeout = min(max(timeout_ms / 1000.0, 0.001), 3600.0)
         render_timeout = min(max(req_timeout, env_render_timeout), 3600.0)
         allow_code = os.environ.get("MAYA_MCP_ALLOW_CODE", "0") == "1"
+        allow_script = os.environ.get("MAYA_MCP_ALLOW_SCRIPT", "0") == "1"
+        allow_external = os.environ.get("MAYA_MCP_ALLOW_EXTERNAL_PATHS", "0") == "1"
+        allowed_roots = tuple(
+            Path(entry).resolve()
+            for entry in os.environ.get("MAYA_MCP_ALLOWED_ROOTS", "").split(os.pathsep)
+            if entry.strip()
+        )
         settings = Settings(
             root=root,
+            allowed_roots=allowed_roots,
+            allow_external_paths=allow_external,
             token=token,
             timeout=req_timeout,
             render_timeout=render_timeout,
             allow_code=allow_code,
+            allow_script=allow_script,
             mode="gui",
         )
         handlers = MayaHandlers(cmds, settings).commands()

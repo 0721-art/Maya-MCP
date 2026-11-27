@@ -8,11 +8,14 @@ from PIL import Image
 from .policy import output_path, project_path, publish_file
 
 
-def compose_sheet(root, rows, path, overwrite=False):
+def compose_sheet(root, rows, path, overwrite=False, *, allowed_roots=(),
+                  allow_external=False, allow_outside_root=False):
     if not 1 <= len(rows) <= 8 or not 1 <= len(rows[0]) <= 8 or any(len(r) != len(rows[0]) for r in rows):
         raise ValueError("Use a rectangular grid of up to 8 rows and 8 columns")
-    sources = [[project_path(root, item) for item in row] for row in rows]
-    target_candidate = project_path(root, path)
+    path_opts = dict(allowed_roots=allowed_roots, allow_external=allow_external,
+                     allow_outside_root=allow_outside_root)
+    sources = [[project_path(root, item, **path_opts) for item in row] for row in rows]
+    target_candidate = project_path(root, path, **path_opts)
     if any(target_candidate == source for row in sources for source in row):
         raise ValueError("The sheet output must differ from input paths")
     sizes = []
@@ -26,7 +29,7 @@ def compose_sheet(root, rows, path, overwrite=False):
                 if picture.format not in {"PNG", "JPEG"} or max(picture.size) > 4096:
                     raise ValueError(f"Expected a PNG/JPEG no larger than 4096 pixels per side: {source}")
                 sizes.append(picture.size)
-    target = output_path(root, path, {".png"}, overwrite)
+    target = output_path(root, path, {".png"}, overwrite, **path_opts)
     cell_width = max(w for w, _ in sizes)
     cell_height = max(h for _, h in sizes)
     width, height = cell_width * len(rows[0]), cell_height * len(rows)

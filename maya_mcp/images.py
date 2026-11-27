@@ -1,22 +1,86 @@
 from contextlib import contextmanager
-import os
 import locale
 import math
+import os
 from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+
+from .capabilities import is_arnold_license_error
+from .config import _is_ascii, staging_temp_root
 from .policy import publish_file
 
 PRESETS = {
     "front": (0, 0, 0), "back": (0, 180, 0), "side": (0, 90, 0),
     "left": (0, -90, 0), "top": (-90, 0, 0), "persp": (-14, 24, 0),
 }
+RENDERERS = {"mayaSoftware": "sw", "arnold": "arnold"}
 
 
 def dimensions(width, height):
     if not all(type(v) is int and 16 <= v <= 4096 for v in (width, height)):
         raise ValueError("Image dimensions must be between 16 and 4096 pixels")
+
+
+def compute_ortho_camera(span_x, span_y, width, height, padding=1.16):
+    """Return ``(orthographicWidth, horizontalAperture, verticalAperture, filmFit)``.
+
+    Matches the camera film-gate aspect ratio to ``width / height`` with
+    horizontal ``filmFit=1`` so orthographic framing neither clips nor stretches
+    on non-square portrait or landscape resolutions.
+    """
+    aspect = float(width) / float(height)
+    ortho_width = float(padding) * max(float(span_x), float(span_y) * aspect, 0.01)
+    horiz_aperture = 1.0
+    vert_aperture = 1.0 / aspect
+    return ortho_width, horiz_aperture, vert_aperture, 1
+
+
+def _temp_base(target, root=None):
+    parent = Path(target).parent
+    if _is_ascii(str(parent)):
+        return parent
+    return staging_temp_root(root or parent)
+
+
+@contextmanager
+def _render_resolution(cmds, width, height):
+    """Temporarily align defaultResolution with width/height and square pixels."""
+    if not callable(getattr(cmds, "objExists", None)) or not cmds.objExists("defaultResolution"):
+        yield
+        return
+    attrs = ("aspectLock", "width", "height", "deviceAspectRatio", "pixelAspect")
+    saved = {}
+    for attr in attrs:
+        full = f"defaultResolution.{attr}"
+        try:
+            saved[full] = cmds.getAttr(full)
+        except Exception:
+            pass
+    aspect = float(width) / float(height)
+    try:
+        if "defaultResolution.aspectLock" in saved:
+            cmds.setAttr("defaultResolution.aspectLock", False)
+        if "defaultResolution.width" in saved:
+            cmds.setAttr("defaultResolution.width", width)
+        if "defaultResolution.height" in saved:
+            cmds.setAttr("defaultResolution.height", height)
+        if "defaultResolution.deviceAspectRatio" in saved:
+            cmds.setAttr("defaultResolution.deviceAspectRatio", aspect)
+        if "defaultResolution.pixelAspect" in saved:
+            cmds.setAttr("defaultResolution.pixelAspect", 1.0)
+        yield
+    finally:
+        if "defaultResolution.aspectLock" in saved:
+            cmds.setAttr("defaultResolution.aspectLock", False)
+        for attr in ("width", "height", "deviceAspectRatio", "pixelAspect", "aspectLock"):
+            full = f"defaultResolution.{attr}"
+            if full in saved:
+                try:
+                    cmds.setAttr(full, saved[full])
+                except Exception:
+                    pass
 
 
 @contextmanager
@@ -57,8 +121,11 @@ def view_camera(cmds, camera, width, height, frame_shapes=()):
         distance = 30 + 3 * max(v.length() for v in offsets)
         position = center + forward * distance
         cmds.xform(node, worldSpace=True, translation=tuple(position))
-        cmds.setAttr(shape + ".orthographicWidth", 1.16 * max(span_x, span_y * width / height, 0.01))
-        cmds.setAttr(shape + ".filmFit", 1)
+        ortho_width, h_ap, v_ap, film_fit = compute_ortho_camera(span_x, span_y, width, height)
+        cmds.setAttr(shape + ".orthographicWidth", ortho_width)
+        cmds.setAttr(shape + ".horizontalFilmAperture", h_ap)
+        cmds.setAttr(shape + ".verticalFilmAperture", v_ap)
+        cmds.setAttr(shape + ".filmFit", film_fit)
         cmds.setAttr(shape + ".farClipPlane", max(10000.0, distance * 4.0))
         cmds.setAttr(shape + ".nearClipPlane", max(0.01, min(0.1, distance * 1e-4)))
         yield shape
@@ -116,32 +183,94 @@ def validate_uv_bounds(bounds):
     return bounds
 
 
+def _invoke_cli_render(render_bin, renderer_flag, folder, scene, frame, shape, width, height, timeout):
+    for stale in folder.glob("mcp_render*.png*"):
+        stale.unlink(missing_ok=True)
+    arguments = [
+        str(render_bin), "-r", renderer_flag, "-proj", str(folder), "-rd", str(folder),
+        "-im", "mcp_render", "-of", "png", "-s", frame, "-e", frame, "-cam", shape,
+        "-x", str(width), "-y", str(height), str(scene),
+    ]
+    log = folder / f"render_{renderer_flag}.log"
+    with log.open("wb") as stream:
+        result = subprocess.run(
+            arguments, cwd=str(folder), stdout=stream, stderr=subprocess.STDOUT,
+            timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    frames = list(folder.glob("mcp_render*.png*"))
+    detail = log.read_bytes()[-1500:].decode(locale.getpreferredencoding(False), errors="replace")
+    return result.returncode, frames, detail
+
+
 def render_view(cmds, path, camera, width, height, timeout=600, executable=None, overwrite=False,
-                frame_shapes=()):
+                frame_shapes=(), renderer="mayaSoftware", fallback_to_software=False, root=None):
     from .handlers import written
 
     dimensions(width, height)
+    if renderer not in RENDERERS:
+        raise ValueError(f"Unsupported renderer {renderer!r}; choose one of {sorted(RENDERERS)}")
+    if type(fallback_to_software) is not bool:
+        raise ValueError("fallback_to_software must be a boolean")
     render = _render_executable(executable)
-    with view_camera(cmds, camera, width, height, frame_shapes) as shape, TemporaryDirectory(dir=path.parent) as temp:
+    warnings = []
+    actual_renderer = renderer
+    fallback = None
+
+    with (
+        view_camera(cmds, camera, width, height, frame_shapes) as shape,
+        _render_resolution(cmds, width, height),
+        TemporaryDirectory(dir=_temp_base(path, root=root)) as temp,
+    ):
         folder = Path(temp)
         scene = folder / "view.ma"
         cmds.file(scene.as_posix(), exportAll=True, force=True, type="mayaAscii",
                   preserveReferences=False)
         frame = str(cmds.currentTime(query=True))
-        arguments = [str(render), "-r", "sw", "-proj", temp, "-rd", temp, "-im", "mcp_render",
-                     "-of", "png", "-s", frame, "-e", frame, "-cam", shape,
-                     "-x", str(width), "-y", str(height), str(scene)]
-        log = folder / "render.log"
-        with log.open("wb") as stream:
-            result = subprocess.run(arguments, cwd=temp, stdout=stream, stderr=subprocess.STDOUT,
-                                    timeout=timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        frames = list(folder.glob("mcp_render*.png*"))
-        if result.returncode or len(frames) != 1:
-            detail = log.read_bytes()[-1000:].decode(locale.getpreferredencoding(False), errors="replace")
-            raise RuntimeError(f"Maya Software did not produce the requested PNG ({result.returncode}): {detail}")
+
+        rc, frames, detail = _invoke_cli_render(
+            render, RENDERERS[renderer], folder, scene, frame, shape, width, height, timeout
+        )
+        arnold_unlicensed = renderer == "arnold" and is_arnold_license_error(detail)
+        if rc or len(frames) != 1 or arnold_unlicensed:
+            if renderer == "arnold":
+                reason = (
+                    "Arnold license unavailable (environment/RLM batch license missing)"
+                    if arnold_unlicensed else f"Arnold render failed ({rc})"
+                )
+                if not fallback_to_software:
+                    raise RuntimeError(
+                        f"{reason}; no image was published. Use renderer='mayaSoftware' or pass "
+                        f"fallback_to_software=True for an explicit Maya Software fallback. Detail: {detail}"
+                    )
+                warnings.append(
+                    f"{reason}; fell back to mayaSoftware as requested by fallback_to_software=True."
+                )
+                actual_renderer = "mayaSoftware"
+                fallback = "mayaSoftware"
+                rc, frames, detail = _invoke_cli_render(
+                    render, RENDERERS["mayaSoftware"], folder, scene, frame, shape, width, height, timeout
+                )
+            if rc or len(frames) != 1:
+                raise RuntimeError(f"Maya Software did not produce the requested PNG ({rc}): {detail}")
+
         source = frames[0].rename(folder / "view.png")
         publish_png(source, path, width, height, overwrite)
-    return {**written(path), "source": "mayaSoftware", "camera": camera}
+
+    result = {
+        **written(path),
+        "source": actual_renderer,
+        "renderer": actual_renderer,
+        "requested_renderer": renderer,
+        "camera": camera,
+        "width": width,
+        "height": height,
+        "aspect_ratio": round(width / height, 6),
+    }
+    if fallback is not None:
+        result["fallback"] = fallback
+    if warnings:
+        result["warnings"] = warnings
+    return result
 
 
 def publish_png(source, target, width, height, overwrite=False):
@@ -159,7 +288,7 @@ def publish_png(source, target, width, height, overwrite=False):
     publish_file(source, target, overwrite)
 
 
-def capture_viewport(cmds, path, camera, width, height, overwrite=False, frame_shapes=()):
+def capture_viewport(cmds, path, camera, width, height, overwrite=False, frame_shapes=(), root=None):
     from .handlers import written
 
     dimensions(width, height)
@@ -170,7 +299,11 @@ def capture_viewport(cmds, path, camera, width, height, overwrite=False, frame_s
     panel = focused if focused in panels else panels[0]
     previous = cmds.modelPanel(panel, query=True, camera=True)
     image_format = cmds.getAttr("defaultRenderGlobals.imageFormat")
-    with view_camera(cmds, camera, width, height, frame_shapes) as shape, TemporaryDirectory(dir=path.parent) as temp:
+    with (
+        view_camera(cmds, camera, width, height, frame_shapes) as shape,
+        _render_resolution(cmds, width, height),
+        TemporaryDirectory(dir=_temp_base(path, root=root)) as temp,
+    ):
         target = Path(temp) / "viewport.png"
         try:
             cmds.modelPanel(panel, edit=True, camera=shape)
@@ -183,10 +316,22 @@ def capture_viewport(cmds, path, camera, width, height, overwrite=False, frame_s
         finally:
             cmds.modelPanel(panel, edit=True, camera=previous)
             cmds.setAttr("defaultRenderGlobals.imageFormat", image_format)
-    return {**written(path), "source": "mayaViewport", "camera": camera}
+    return {
+        **written(path),
+        "mode": "gui",
+        "is_gui_viewport": True,
+        "requested_source": "mayaViewport",
+        "source": "mayaViewport",
+        "fallback": None,
+        "panel": panel,
+        "camera": camera,
+        "width": width,
+        "height": height,
+        "aspect_ratio": round(width / height, 6),
+    }
 
 
-def uv_snapshot(cmds, path, nodes, size, uv_set=None, bounds=None, overwrite=False):
+def uv_snapshot(cmds, path, nodes, size, uv_set=None, bounds=None, overwrite=False, root=None):
     from .handlers import written
 
     dimensions(size, size)
@@ -194,7 +339,7 @@ def uv_snapshot(cmds, path, nodes, size, uv_set=None, bounds=None, overwrite=Fal
     if validate_uv_bounds(bounds) is not None:
         options.update(zip(("uMin", "vMin", "uMax", "vMax"), bounds))
     selection = cmds.ls(selection=True, long=True) or []
-    with TemporaryDirectory(dir=path.parent) as temp:
+    with TemporaryDirectory(dir=_temp_base(path, root=root)) as temp:
         target = Path(temp) / "uv.png"
         try:
             cmds.select(nodes, replace=True)
@@ -204,4 +349,4 @@ def uv_snapshot(cmds, path, nodes, size, uv_set=None, bounds=None, overwrite=Fal
             publish_png(target, path, size, size, overwrite)
         finally:
             cmds.select(selection, replace=True) if selection else cmds.select(clear=True)
-    return {**written(path), "source": "mayaUvSnapshot"}
+    return {**written(path), "source": "mayaUvSnapshot", "size": size}

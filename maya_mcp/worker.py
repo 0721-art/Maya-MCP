@@ -4,7 +4,8 @@ from queue import Empty, Queue
 from threading import Thread
 
 from .bridge import Bridge
-from .config import Settings
+from .capabilities import ensure_plugin
+from .config import Settings, _is_ascii, staging_temp_root
 
 
 def main():
@@ -18,7 +19,19 @@ def main():
         from maya import cmds
         from .handlers import MayaHandlers
 
-        cmds.workspace(settings.root.as_posix(), openWorkspace=True)
+        workspace_dir = settings.root if _is_ascii(str(settings.root)) else staging_temp_root(settings.root)
+        try:
+            cmds.workspace(workspace_dir.as_posix(), openWorkspace=True)
+        except RuntimeError:
+            pass
+        try:
+            cmds.undoInfo(state=True, infinity=False, length=100)
+        except RuntimeError:
+            pass
+        # Preload FBX and OBJ translators when available so export/import and scripts work immediately.
+        ensure_plugin(cmds, "fbxmaya")
+        ensure_plugin(cmds, "objExport")
+
         pending = Queue()
         with Bridge(settings, MayaHandlers(cmds, settings).commands(), "headless",
                     cmds.about(version=True), pending.put_nowait) as bridge:

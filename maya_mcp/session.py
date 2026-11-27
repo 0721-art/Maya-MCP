@@ -75,12 +75,15 @@ class MayaSession:
         if env.get("PYTHONPATH"):
             pythonpath += os.pathsep + env["PYTHONPATH"]
         env.update(PYTHONPATH=pythonpath, MAYA_MCP_PROJECT_ROOT=str(s.root),
+                   MAYA_MCP_ALLOWED_ROOTS=os.pathsep.join(str(p) for p in s.allowed_roots),
+                   MAYA_MCP_ALLOW_EXTERNAL_PATHS="1" if s.allow_external_paths else "0",
                    MAYA_MCP_MODE="headless", MAYA_MCP_PORT=str(port),
                    MAYA_MCP_TOKEN=self.client.token,
                    MAYA_MCP_TIMEOUT=str(s.timeout),
                    MAYA_MCP_RENDER_TIMEOUT=str(s.render_timeout),
                    MAYA_MCP_MAYAPY=str(s.mayapy),
-                   MAYA_MCP_ALLOW_CODE="1" if s.allow_code else "0")
+                   MAYA_MCP_ALLOW_CODE="1" if s.allow_code else "0",
+                   MAYA_MCP_ALLOW_SCRIPT="1" if s.allow_script else "0")
         if s.version is not None:
             env["MAYA_MCP_VERSION"] = str(s.version)
         else:
@@ -113,9 +116,12 @@ class MayaSession:
             self.close()
             raise
 
-    def call(self, command, *, long=False, **params):
+    def call(self, command, *, long=False, call_timeout=None, **params):
         self._ensure_bridge()
-        timeout = self.settings.render_timeout if long else self.settings.timeout
+        if call_timeout is None:
+            timeout = self.settings.render_timeout if long else self.settings.timeout
+        else:
+            timeout = min(max(float(call_timeout), 1.0), self.settings.render_timeout)
         try:
             return self.client.envelope(command, timeout=timeout, **params)
         except BridgeError as exc:

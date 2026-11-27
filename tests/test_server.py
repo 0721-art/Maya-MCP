@@ -72,22 +72,56 @@ class SessionModeTests(unittest.TestCase):
                 session.call("get_maya_info")
             self.assertEqual(ctx.exception.kind, "configuration")
 
-    def test_handlers_command_surface_is_38_commands(self):
+    def test_handlers_command_surface_is_44_commands(self):
         commands = MayaHandlers(object(), Settings()).commands()
-        self.assertEqual(len(commands), 38)
-        self.assertEqual(len(commands) + len(LOCAL_TOOLS), 42)
+        self.assertEqual(len(commands), 44)
+        self.assertEqual(len(commands) + len(LOCAL_TOOLS), 48)
+
+    def test_settings_from_env_and_cli_flags(self):
+        import os
+        from maya_mcp.server import parse_args, settings_from_args
+
+        with patch.dict(os.environ, {
+            "MAYA_MCP_ALLOW_CODE": "1",
+            "MAYA_MCP_ALLOW_SCRIPT": "1",
+            "MAYA_MCP_ALLOW_EXTERNAL_PATHS": "1",
+            "MAYA_MCP_ALLOWED_ROOTS": f"{Path('.').resolve()}{os.pathsep}{Path('tests').resolve()}",
+        }, clear=False):
+            env_settings = Settings.from_env()
+        self.assertTrue(env_settings.allow_code)
+        self.assertTrue(env_settings.allow_script)
+        self.assertTrue(env_settings.allow_external_paths)
+        self.assertEqual(len(env_settings.allowed_roots), 2)
+
+        args = parse_args([
+            "--project-root", ".",
+            "--allowed-root", "tests",
+            "--allow-external-paths",
+            "--allow-code",
+            "--allow-script",
+            "--mode", "headless",
+            "--port", "9911",
+        ])
+        cli_settings = settings_from_args(args, base=Settings())
+        self.assertEqual(cli_settings.root, Path(".").resolve())
+        self.assertEqual(cli_settings.allowed_roots, (Path("tests").resolve(),))
+        self.assertTrue(cli_settings.allow_external_paths)
+        self.assertTrue(cli_settings.allow_code)
+        self.assertTrue(cli_settings.allow_script)
+        self.assertEqual(cli_settings.mode, "headless")
+        self.assertEqual(cli_settings.port, 9911)
 
 
 @unittest.skipUnless(HAS_MCP, "mcp SDK is required to instantiate FastMCP server")
 class ServerSchemaTests(unittest.TestCase):
-    def test_server_registers_all_42_tools_with_valid_schemas(self):
+    def test_server_registers_all_48_tools_with_valid_schemas(self):
         from maya_mcp.server import make_server
 
         server = make_server(Settings(mode="headless", port=9876))
         tools = asyncio.run(server.list_tools())
         names = {tool.name for tool in tools}
         expected = set(MayaHandlers(object(), Settings()).commands()) | LOCAL_TOOLS
-        self.assertEqual(len(tools), 42)
+        self.assertEqual(len(tools), 48)
         self.assertEqual(names, expected)
         for tool in tools:
             self.assertTrue(tool.description, f"Missing description for {tool.name}")
