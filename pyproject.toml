@@ -7,6 +7,7 @@ name = "maya-mcp"
 version = "0.2.0"
 description = "General-purpose MCP stdio server for Autodesk Maya"
 requires-python = ">=3.11"
+license = { text = "MIT" }
 dependencies = ["mcp==1.30.0", "Pillow>=10,<13"]
 
 [project.optional-dependencies]

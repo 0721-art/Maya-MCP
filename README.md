@@ -254,4 +254,4 @@ tests/
 
 ## 许可
 
-见仓库根目录 `LICENSE`（如存在）；未声明时按仓库默认策略处理。
+本项目采用 [MIT License](LICENSE)。
