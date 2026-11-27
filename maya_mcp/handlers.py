@@ -204,8 +204,8 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
             self.cmds.editDisplayLayerMembers(layer, nodes)
         return {"layer": layer, "members": nodes}
 
-    def _output(self, path, extensions, overwrite):
-        return output_path(self.settings.root, path, extensions, overwrite)
+    def _output(self, path, extensions, overwrite, create_parent=True):
+        return output_path(self.settings.root, path, extensions, overwrite, create_parent=create_parent)
 
     def save_scene(self, path, overwrite=False):
         target = self._output(path, {".ma", ".mb"}, overwrite)
@@ -221,12 +221,13 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
             raise
 
     def export_scene(self, path, names=(), overwrite=False):
-        target = self._output(path, {".fbx", ".obj"}, overwrite)
+        target = self._output(path, {".fbx", ".obj"}, overwrite, create_parent=False)
         nodes = [self._node(name) for name in names]
         c = self.cmds
         plugin, file_type = (("fbxmaya", "FBX export") if target.suffix.lower() == ".fbx"
                              else ("objExport", "OBJexport"))
         require_plugin(c, plugin)
+        target.parent.mkdir(parents=True, exist_ok=True)
         selection = c.ls(selection=True, long=True) or []
         try:
             if nodes:
@@ -243,10 +244,12 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
 
     def render_view(self, path, camera="front", width=800, height=800, overwrite=False,
                     names=(), frame_names=()):
-        path = self._output(path, {".png"}, overwrite)
+        images.dimensions(width, height)
+        target = self._output(path, {".png"}, overwrite, create_parent=False)
         shapes, frame = self._capture_shapes(names), self._capture_shapes(frame_names)
         with images.isolate_meshes(self.cmds, shapes):
-            return images.render_view(self.cmds, path, camera, width, height,
+            target.parent.mkdir(parents=True, exist_ok=True)
+            return images.render_view(self.cmds, target, camera, width, height,
                                       self.settings.render_timeout, self.settings.mayapy, overwrite, frame)
 
     def capture_viewport(self, path, camera="front", width=800, height=800, overwrite=False,
@@ -255,18 +258,23 @@ class MayaHandlers(Modeling, Topology, UV, Baking):
         if c.about(batch=True):
             result = self.render_view(path, camera, width, height, overwrite, names, frame_names)
             return {**result, "fallback": "render", "warnings": ["Viewport unavailable in standalone Maya"]}
-        output = self._output(path, {".png"}, overwrite)
+        images.dimensions(width, height)
+        output = self._output(path, {".png"}, overwrite, create_parent=False)
         shapes, frame = self._capture_shapes(names), self._capture_shapes(frame_names)
         with images.isolate_meshes(c, shapes):
+            output.parent.mkdir(parents=True, exist_ok=True)
             return images.capture_viewport(c, output, camera, width, height, overwrite, frame)
 
     def uv_snapshot(self, path, names, size=1024, overwrite=False, uv_set=None, bounds=None):
-        path = self._output(path, {".png"}, overwrite)
+        images.dimensions(size, size)
+        images.validate_uv_bounds(bounds)
+        target = self._output(path, {".png"}, overwrite, create_parent=False)
         nodes = self._mesh_nodes(names)
         if uv_set is not None:
             for node in nodes:
                 current_uv_set(self.cmds, self._mesh(node)[1], uv_set)
-        return images.uv_snapshot(self.cmds, path, nodes, size, uv_set, bounds, overwrite)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        return images.uv_snapshot(self.cmds, target, nodes, size, uv_set, bounds, overwrite)
 
     def execute_maya_code(self, code):
         if not self.settings.allow_code:

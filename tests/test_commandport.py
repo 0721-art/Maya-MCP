@@ -15,17 +15,17 @@ from pathlib import Path
 from unittest.mock import patch
 
 from maya_mcp.client import BridgeError
-from maya_mcp.commandport import (BEGIN, END, REPO_ROOT, CommandPortClient,
-                                  build_request, dispatch, parse_reply)
+from maya_mcp.commandport import (BEGIN, END, REPO_ROOT, REQUEST_LIMIT,
+                                  CommandPortClient, build_request, dispatch,
+                                  parse_reply)
 from maya_mcp.config import Settings
 
 
 def _request_payload(script: str) -> dict:
-    """Decode the outer/inner base64 layers used by the commandPort line."""
-    outer_b64 = re.search(r"b64decode\('([^']+)'\)", script).group(1)
-    outer = base64.b64decode(outer_b64).decode("utf-8")
-    inner_b64 = re.search(r"dispatch\('([^']+)'\)", outer).group(1)
-    return json.loads(base64.b64decode(inner_b64).decode("utf-8"))
+    """Decode the request base64 payload embedded in the commandPort line."""
+    match = re.search(r"\{'_req':'([^']+)'\}", script)
+    assert match is not None, f"Could not extract _req payload from: {script[:120]}"
+    return json.loads(base64.b64decode(match.group(1)).decode("utf-8"))
 
 
 def _fake_maya_modules(version="2026"):
@@ -100,10 +100,16 @@ class CommandPortTests(unittest.TestCase):
             request_id, line = build_request(
                 "get_maya_info", {}, "tok", Path(project_dir),
                 request_id="req-import-err", repo_root=Path(empty_repo))
-            # Simulate Maya without maya_mcp in sys.modules or sys.path
+            # Simulate Maya without maya_mcp in sys.modules, sys.path, or editable meta_path finders
             saved = {k: sys.modules.pop(k) for k in list(sys.modules) if k == "maya_mcp" or k.startswith("maya_mcp.")}
+            non_editable_finders = [
+                finder for finder in sys.meta_path
+                if "editable" not in type(finder).__name__.lower()
+                and "editable" not in getattr(finder, "__module__", "").lower()
+            ]
             try:
-                with patch.object(sys, "path", [empty_repo]):
+                with patch.object(sys, "path", [empty_repo]), \
+                     patch.object(sys, "meta_path", non_editable_finders):
                     buf = io.StringIO()
                     with contextlib.redirect_stdout(buf):
                         returned = eval(line.strip(), {})
@@ -284,6 +290,99 @@ class CommandPortTests(unittest.TestCase):
             CommandPortClient("127.0.0.1", 0, "tok", Path("."))
         with self.assertRaisesRegex(ValueError, "127.0.0.1"):
             CommandPortClient("0.0.0.0", 7001, "tok", Path("."))
+
+    def test_delimiter_collision_in_payload_and_maya_stdout_is_safe(self):
+        ready = threading.Event()
+        address = []
+        fake_modules = _fake_maya_modules()
+        # Return scene/object payload containing literal BEGIN and END markers
+        fake_modules["maya.cmds"].ls = lambda *a, **kw: (
+            [f"|{BEGIN}", f"|{END}"] if kw.get("type") == "transform" else []
+        )
+        fake_modules["maya.cmds"].listRelatives = lambda *a, **kw: []
+
+        with tempfile.TemporaryDirectory() as external_root:
+            project_root = Path(external_root).resolve()
+
+            def serve():
+                with socket.socket() as server:
+                    server.bind(("127.0.0.1", 0))
+                    server.listen(1)
+                    address.append(server.getsockname()[1])
+                    ready.set()
+                    conn, _ = server.accept()
+                    with conn:
+                        data = b""
+                        while not data.endswith(b"\n"):
+                            chunk = conn.recv(65536)
+                            if not chunk:
+                                return
+                            data += chunk
+                        # Emit stray stdout containing both static markers before the real framed reply
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            result = eval(data.decode("utf-8").strip(), {})
+                        noisy = f"Warning: {BEGIN} stray {END} output\n{result}\n\x00"
+                        conn.sendall(noisy.encode("utf-8"))
+
+            with patch.dict(os.environ, {"MAYA_MCP_TOKEN": "tok-delim",
+                                         "MAYA_MCP_PROJECT_ROOT": str(project_root)}, clear=False), \
+                 patch.dict(sys.modules, fake_modules):
+                thread = threading.Thread(target=serve, daemon=True)
+                thread.start()
+                ready.wait(2)
+                client = CommandPortClient("127.0.0.1", address[0], "tok-delim", project_root)
+                envelope = client.envelope("get_scene_info")
+                self.assertTrue(envelope["ok"])
+                paths = [obj["path"] for obj in envelope["data"]["objects"]]
+                self.assertEqual(paths, [f"|{BEGIN}", f"|{END}"])
+                thread.join(2)
+                self.assertFalse(thread.is_alive())
+
+    def test_build_request_and_client_enforce_buffer_size_limit(self):
+        big_params = {"vertices": list(range(20000))}
+        with self.assertRaisesRegex(ValueError, "exceeds buffer limit"):
+            build_request("mesh_snap", big_params, "tok", Path("."), max_bytes=REQUEST_LIMIT)
+        client = CommandPortClient("127.0.0.1", 7001, "tok", Path("."), max_request_bytes=2048)
+        with self.assertRaises(BridgeError) as ctx:
+            client.envelope("mesh_snap", vertices=list(range(1000)))
+        self.assertEqual(ctx.exception.kind, "validation")
+        self.assertIn("buffer limit", str(ctx.exception))
+
+        with patch.dict(os.environ, {"MAYA_MCP_COMMAND_BUFFER_SIZE": "131072"}, clear=False):
+            custom = CommandPortClient("127.0.0.1", 7001, "tok", Path("."))
+            self.assertEqual(custom.max_request_bytes, 131072)
+
+    def test_dispatch_validates_request_id_and_classifies_serialization_as_internal(self):
+        def encode_req(payload):
+            return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+        # Missing / invalid / oversized request id -> validation error with id=None
+        for bad_id in (None, "", 123, "a" * 129):
+            with self.subTest(bad_id=bad_id):
+                res = json.loads(dispatch(encode_req({
+                    "id": bad_id, "type": "get_maya_info", "params": {}, "token": "tok",
+                })))
+                self.assertFalse(res["ok"])
+                self.assertIsNone(res["id"])
+                self.assertEqual(res["error"]["kind"], "validation")
+                self.assertIn("request id", res["error"]["message"].lower())
+
+        # Non-JSON-serializable / NaN handler result -> internal error (parity with Bridge)
+        with tempfile.TemporaryDirectory() as project_dir:
+            fake_modules = _fake_maya_modules()
+            fake_modules["maya.cmds"].about = lambda version=False, apiVersion=False, batch=False: (
+                float("nan") if apiVersion else ("2026" if version else False)
+            )
+            with patch.dict(os.environ, {"MAYA_MCP_TOKEN": "tok",
+                                         "MAYA_MCP_PROJECT_ROOT": project_dir}, clear=False), \
+                 patch.dict(sys.modules, fake_modules):
+                res = json.loads(dispatch(encode_req({
+                    "id": "req-nan", "type": "get_maya_info", "params": {},
+                    "token": "tok", "root": project_dir,
+                })))
+                self.assertFalse(res["ok"])
+                self.assertEqual(res["id"], "req-nan")
+                self.assertEqual(res["error"]["kind"], "internal")
 
     def test_settings_reads_command_port_environment(self):
         with patch.dict(os.environ, {

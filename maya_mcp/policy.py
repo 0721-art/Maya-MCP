@@ -5,15 +5,32 @@ import shutil
 from pathlib import Path
 
 
-def output_path(root, name, extensions, overwrite=False):
+def _check_no_symlink_inside_root(root_resolved, raw):
+    candidate = Path(os.path.normpath(str(root_resolved / raw)))
+    root_norm = os.path.normcase(str(root_resolved))
+    current = candidate
+    while True:
+        if os.path.normcase(str(current)) == root_norm:
+            return
+        if current.is_symlink():
+            raise ValueError(f"Output path cannot traverse or target a symlink: {current}")
+        parent = current.parent
+        if parent == current:
+            return
+        current = parent
+
+
+def output_path(root, name, extensions, overwrite=False, create_parent=True):
     if type(overwrite) is not bool:
         raise ValueError("overwrite must be a boolean")
     path = project_path(root, name)
     if path.suffix.lower() not in extensions:
         raise ValueError(f"Expected a file with suffix in {sorted(extensions)}")
+    _check_no_symlink_inside_root(Path(root).resolve(), Path(name))
     if (path.exists() or path.is_symlink()) and (not overwrite or path.is_symlink() or not path.is_file()):
         raise ValueError(f"Output already exists: {path}")
-    path.parent.mkdir(parents=True, exist_ok=True)
+    if create_parent:
+        path.parent.mkdir(parents=True, exist_ok=True)
     return path
 
 

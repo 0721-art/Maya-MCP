@@ -1,4 +1,6 @@
+import dataclasses
 import hmac
+import os
 import socketserver
 import subprocess
 import time
@@ -135,7 +137,10 @@ def start_gui(settings=None):
 
     if cmds.about(batch=True):
         raise RuntimeError("Use python -m maya_mcp.worker in standalone Maya")
-    settings = settings or Settings.from_env()
+    if settings is None:
+        settings = Settings.from_env()
+        if not os.environ.get("MAYA_MCP_MAYAPY") and not os.environ.get("MAYA_MCP_VERSION"):
+            settings = dataclasses.replace(settings, mayapy=None)
     if not settings.token:
         raise ValueError("Set the same nonempty MAYA_MCP_TOKEN for Maya and the MCP server")
     bridge = Bridge(settings, MayaHandlers(cmds, settings).commands(), "gui",

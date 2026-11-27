@@ -88,14 +88,40 @@ def isolate_meshes(cmds, shapes):
             cmds.setAttr(attribute, True)
 
 
+def _render_executable(executable=None):
+    render_name = "Render.exe" if os.name == "nt" else "Render"
+    candidates = []
+    if executable:
+        candidates.append(Path(executable).with_name(render_name))
+    else:
+        exe = Path(sys.executable)
+        candidates.append(exe.with_name(render_name))
+        location = os.environ.get("MAYA_LOCATION")
+        if location:
+            candidates.append(Path(location) / "bin" / render_name)
+        candidates.append(exe.resolve().parent.parent / "bin" / render_name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    raise ValueError(f"Maya command-line renderer is unavailable: {candidates[0]}")
+
+
+def validate_uv_bounds(bounds):
+    if bounds is None:
+        return None
+    if (len(bounds) != 4
+            or any(type(v) not in (int, float) or not math.isfinite(v) for v in bounds)
+            or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
+        raise ValueError("Bounds must be [min_u, min_v, max_u, max_v] with positive width and height")
+    return bounds
+
+
 def render_view(cmds, path, camera, width, height, timeout=600, executable=None, overwrite=False,
                 frame_shapes=()):
     from .handlers import written
 
     dimensions(width, height)
-    render = Path(executable or sys.executable).with_name("Render.exe" if os.name == "nt" else "Render")
-    if not render.is_file():
-        raise ValueError(f"Maya command-line renderer is unavailable: {render}")
+    render = _render_executable(executable)
     with view_camera(cmds, camera, width, height, frame_shapes) as shape, TemporaryDirectory(dir=path.parent) as temp:
         folder = Path(temp)
         scene = folder / "view.ma"
@@ -103,7 +129,7 @@ def render_view(cmds, path, camera, width, height, timeout=600, executable=None,
                   preserveReferences=False)
         frame = str(cmds.currentTime(query=True))
         arguments = [str(render), "-r", "sw", "-proj", temp, "-rd", temp, "-im", "mcp_render",
-                     "-of", "png", "-s", frame, "-e", frame, "-cam", shape.split("|")[-1],
+                     "-of", "png", "-s", frame, "-e", frame, "-cam", shape,
                      "-x", str(width), "-y", str(height), str(scene)]
         log = folder / "render.log"
         with log.open("wb") as stream:
@@ -165,11 +191,7 @@ def uv_snapshot(cmds, path, nodes, size, uv_set=None, bounds=None, overwrite=Fal
 
     dimensions(size, size)
     options = {"uvSetName": uv_set} if uv_set is not None else {}
-    if bounds is not None:
-        if (len(bounds) != 4
-                or any(type(v) not in (int, float) or not math.isfinite(v) for v in bounds)
-                or bounds[0] >= bounds[2] or bounds[1] >= bounds[3]):
-            raise ValueError("Bounds must be [min_u, min_v, max_u, max_v] with positive width and height")
+    if validate_uv_bounds(bounds) is not None:
         options.update(zip(("uMin", "vMin", "uMax", "vMax"), bounds))
     selection = cmds.ls(selection=True, long=True) or []
     with TemporaryDirectory(dir=path.parent) as temp:

@@ -2,13 +2,17 @@ import errno
 import os
 import socket
 import subprocess
+import sys
 import tempfile
+import types
 import unittest
 from io import BytesIO
 from pathlib import Path
 from threading import Thread
 from unittest.mock import patch
 
+from maya_mcp import bridge as bridge_module
+from maya_mcp import images as images_module
 from maya_mcp.bridge import Bridge
 from maya_mcp.client import BridgeClient, BridgeError
 from maya_mcp.config import Settings
@@ -135,3 +139,158 @@ class BridgeTests(unittest.TestCase):
             handlers.modify_object("|Grp|Box", parent="|Grp|Box")
         with self.assertRaisesRegex(ValueError, "itself or one of its descendants"):
             handlers.modify_object("|Grp", parent="|Grp|Box")
+
+    def test_output_path_rejects_intra_root_file_and_parent_symlinks(self):
+        Path(".tmp").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=Path(".tmp").resolve()) as folder:
+            root = Path(folder).resolve()
+            real_dir = root / "real"
+            real_dir.mkdir()
+            real_file = real_dir / "target.png"
+            real_file.write_bytes(b"real")
+            link_file = root / "link.png"
+            link_dir = root / "linkdir"
+            created_real_symlinks = False
+            try:
+                os.symlink(real_file, link_file)
+                os.symlink(real_dir, link_dir, target_is_directory=True)
+                created_real_symlinks = True
+            except OSError:
+                pass
+
+            if created_real_symlinks:
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    output_path(root, "link.png", {".png"}, overwrite=True)
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    output_path(root, "linkdir/out.png", {".png"}, overwrite=True)
+                with self.assertRaisesRegex(ValueError, "symlink"):
+                    output_path(root, "real/../link.png", {".png"}, overwrite=True)
+            else:
+                # Fallback when Windows lacks symlink privilege: verify symlink check runs before resolve()
+                fake_links = {os.path.normcase(str(link_file)), os.path.normcase(str(link_dir))}
+                orig_is_symlink = Path.is_symlink
+
+                def fake_is_symlink(p):
+                    return os.path.normcase(str(p)) in fake_links or orig_is_symlink(p)
+
+                with patch.object(Path, "is_symlink", fake_is_symlink):
+                    with self.assertRaisesRegex(ValueError, "symlink"):
+                        output_path(root, "link.png", {".png"}, overwrite=True)
+                    with self.assertRaisesRegex(ValueError, "symlink"):
+                        output_path(root, "linkdir/out.png", {".png"}, overwrite=True)
+
+    def test_handlers_do_not_create_output_dirs_when_validation_fails(self):
+        class FakeCmds:
+            def about(self, batch=False):
+                return False
+
+            def ls(self, *args, **kwargs):
+                return []
+
+            def pluginInfo(self, *args, **kwargs):
+                return False
+
+            def loadPlugin(self, name, quiet=True):
+                raise RuntimeError("plugin unavailable")
+
+        Path(".tmp").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=Path(".tmp").resolve()) as folder:
+            root = Path(folder).resolve()
+            handlers = MayaHandlers(FakeCmds(), Settings(root=root))
+
+            with self.assertRaises(ValueError):
+                handlers.export_scene("nested_export/a.fbx", names=["Missing"])
+            self.assertFalse((root / "nested_export").exists())
+
+            with self.assertRaises(ValueError):
+                handlers.render_view("nested_render/v.png", width=4, height=4)
+            self.assertFalse((root / "nested_render").exists())
+
+            with self.assertRaises(ValueError):
+                handlers.capture_viewport("nested_vp/v.png", width=4, height=4)
+            self.assertFalse((root / "nested_vp").exists())
+
+            with self.assertRaises(ValueError):
+                handlers.uv_snapshot("nested_uv/u.png", names=["Missing"], size=128)
+            self.assertFalse((root / "nested_uv").exists())
+
+    def test_render_executable_uses_maya_location_and_render_view_passes_full_cam_path(self):
+        Path(".tmp").mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=Path(".tmp").resolve()) as folder:
+            root = Path(folder).resolve()
+            maya_loc = root / "Maya2025"
+            (maya_loc / "bin").mkdir(parents=True)
+            render_name = "Render.exe" if os.name == "nt" else "Render"
+            fake_render = maya_loc / "bin" / render_name
+            fake_render.write_bytes(b"")
+            with patch.dict(os.environ, {"MAYA_LOCATION": str(maya_loc)}, clear=False), \
+                 patch.object(images_module.sys, "executable", str(root / "other" / "maya")):
+                self.assertEqual(images_module._render_executable(None), fake_render)
+
+            # Verify render_view passes the full DAG camera shape path to Render -cam
+            captured_args = []
+
+            class FakeCmds:
+                def ls(self, name, exactType=None, long=False):
+                    if exactType == "camera" and name == "|RigA|camShape":
+                        return ["|RigA|camShape"]
+                    return []
+
+                def file(self, *args, **kwargs):
+                    return None
+
+                def currentTime(self, query=True):
+                    return 1.0
+
+            def fake_run(arguments, cwd, stdout, stderr, timeout, creationflags):
+                captured_args.extend(arguments)
+                (Path(cwd) / "mcp_render.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+                return types.SimpleNamespace(returncode=0)
+
+            out = root / "out.png"
+            with patch.object(images_module, "_render_executable", return_value=fake_render), \
+                 patch.object(images_module.subprocess, "run", side_effect=fake_run), \
+                 patch.object(images_module, "publish_png", lambda src, dst, w, h, ow: dst.write_bytes(b"ok")):
+                images_module.render_view(FakeCmds(), out, "|RigA|camShape", 64, 64)
+            cam_idx = captured_args.index("-cam")
+            self.assertEqual(captured_args[cam_idx + 1], "|RigA|camShape")
+
+    def test_start_gui_clears_auto_discovered_mayapy_when_not_explicit(self):
+        captured = {}
+
+        class FakeBridge:
+            def __init__(self, settings, handlers, mode, version, schedule):
+                captured["settings"] = settings
+                self.server_address = ("127.0.0.1", 9876)
+
+            def serve_forever(self):
+                return None
+
+            def shutdown(self):
+                return None
+
+            def server_close(self):
+                return None
+
+        fake_cmds = types.ModuleType("maya.cmds")
+        fake_cmds.about = lambda batch=False, version=False: "2025" if version else False
+        fake_utils = types.ModuleType("maya.utils")
+        fake_utils.executeDeferred = lambda f: f()
+        fake_maya = types.ModuleType("maya")
+        fake_maya.cmds = fake_cmds
+        fake_maya.utils = fake_utils
+
+        clean_env = {k: v for k, v in os.environ.items()
+                     if k not in {"MAYA_MCP_MAYAPY", "MAYA_MCP_VERSION"}}
+        clean_env["MAYA_MCP_TOKEN"] = "gui-token"
+        with patch.dict(os.environ, clean_env, clear=True), \
+             patch.dict(sys.modules, {"maya": fake_maya, "maya.cmds": fake_cmds, "maya.utils": fake_utils}), \
+             patch.object(bridge_module, "Bridge", FakeBridge), \
+             patch.object(bridge_module, "Thread") as fake_thread, \
+             patch("maya_mcp.config.choose_mayapy", return_value=Path("C:/Maya2026/bin/mayapy.exe")):
+            fake_thread.return_value.start.return_value = None
+            try:
+                bridge_module.start_gui()
+            finally:
+                bridge_module._gui = None
+        self.assertIsNone(captured["settings"].mayapy)

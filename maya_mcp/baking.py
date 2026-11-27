@@ -89,10 +89,11 @@ class Baking:
         uv = self.uv_inspect(node, uv_set)
         if uv["unmapped_faces"] or uv["tiles"] != [{"u": 0, "v": 0, "udim": 1001}]:
             raise ValueError("Arnold Render to Texture requires complete UVs in tile 1001")
-        output = self._output(path, {".exr"}, overwrite)
+        output = self._output(path, {".exr"}, overwrite, create_parent=False)
         require_plugin(c, "mtoa")
         if not has_command(c, "arnoldRenderToTexture"):
             raise ValueError("The loaded MtoA does not provide arnoldRenderToTexture")
+        output.parent.mkdir(parents=True, exist_ok=True)
 
         with TemporaryDirectory(prefix="arnold-", dir=output.parent) as folder, preserve_selection(c):
             shader = c.shadingNode(shaders[kind], asShader=True) if shaders[kind] else None

@@ -32,7 +32,7 @@
 
 ## 验收
 
-- `python -m pytest -q tests` 通过。
+- `.\.venv\Scripts\python.exe -m pytest -q tests`（全部用例通过，无跳过）通过。
 - Maya 2026 smoke 通过：MCP stdio → 建模、拓扑、UV、bake、render、export、job。
 - `get_maya_info`、`list_maya_installations`、至少一个建模/拓扑/UV/烘焙/导出工具可用。
 - 仓库不包含作业模板、固定题目或作业验收专用工具；作业流程只能作为文档示例或外部编排。

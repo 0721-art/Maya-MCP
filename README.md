@@ -64,13 +64,22 @@ maya_mcp.server (宿主 Python 3.11+)
 
 ```powershell
 py -3.11 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
 ```
 
-已有 `.venv` 时只需重新安装：
+如果使用 `uv` 管理虚拟环境：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pip install -e .
+uv venv .venv --python 3.11
+uv pip install --python .\.venv\Scripts\python.exe -e ".[dev]"
+```
+
+已有 `.venv` 时重新安装：
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+# 或
+uv pip install --python .\.venv\Scripts\python.exe -e ".[dev]"
 ```
 
 ## 快速开始
@@ -122,12 +131,13 @@ cmds.commandPort(name="127.0.0.1:7001", sourceType="python", echoOutput=True, bu
 ```powershell
 $env:MAYA_MCP_MODE = "commandport"
 $env:MAYA_MCP_COMMAND_PORT = "7001"
+$env:MAYA_MCP_COMMAND_BUFFER_SIZE = "65536" # 可选，默认 65536，应与 Maya commandPort 的 bufferSize 一致
 $env:MAYA_MCP_TOKEN = "your-token"
 $env:MAYA_MCP_PROJECT_ROOT = "D:\MayaProjects"
-python -m maya_mcp.server
+.\.venv\Scripts\python.exe -m maya_mcp.server
 ```
 
-commandPort 模式不启动 worker，也不需要在 Maya 侧 `pip install` 任何包；宿主每次发送一条单行 Python 表达式，由 Maya 自动将本仓库目录加入 `sys.path` 并调用 `maya_mcp.commandport.dispatch`。认证采用 fail-closed：Maya 侧未设置非空 `MAYA_MCP_TOKEN`（或兼容变量 `MAYA_MCP_COMMAND_TOKEN`）时请求会被拒绝。
+commandPort 模式不启动 worker，也不需要在 Maya 侧 `pip install` 任何包；宿主每次发送一条单行 Python 表达式，由 Maya 自动将本仓库目录加入 `sys.path` 并调用 `maya_mcp.commandport.dispatch`。响应使用按请求隔离的标记与 base64 封装，避免场景对象名或 Maya 标准输出撞车；单次请求长度受 `MAYA_MCP_COMMAND_BUFFER_SIZE`（默认 `65536` 字节）保护，超限时直接返回校验错误而不是被 Maya 静默截断。认证采用 fail-closed：Maya 侧未设置非空 `MAYA_MCP_TOKEN`（或兼容变量 `MAYA_MCP_COMMAND_TOKEN`）时请求会被拒绝。
 
 > **安全提示**：Maya 原生 `commandPort` 在进入 `dispatch()` 之前即会直接执行收到的任意 Python 代码，因此 `MAYA_MCP_TOKEN` 仅提供应用层防误连与会话匹配，不能阻止本机其他进程直接向 `127.0.0.1:7001` 执行任意代码。需要更强边界隔离时，请使用默认的本地 TCP JSON bridge 或 `mayapy` headless 模式。
 
@@ -205,10 +215,11 @@ commandPort 模式不启动 worker，也不需要在 Maya 侧 `pip install` 任�
 ## 测试
 
 ```powershell
-$env:PYTHONPATH = "D:\Maya-MCP"
-python -m pytest -q tests
-python tests/maya_smoke.py --year 2026
+.\.venv\Scripts\python.exe -m pytest -q tests
+.\.venv\Scripts\python.exe tests/maya_smoke.py --year 2026
 ```
+
+（若环境中未安装 `pytest`，也可直接用标准库运行完整单元测试：`.\.venv\Scripts\python.exe -m unittest discover -s tests -v`。）
 
 - 单元测试覆盖 bridge、commandPort、模式和工具 schema。
 - Maya 2026 smoke 覆盖 MCP stdio → 建模、拓扑、UV、bake、render、export、job。
