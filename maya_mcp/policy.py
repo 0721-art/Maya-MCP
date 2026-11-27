@@ -6,18 +6,33 @@ from pathlib import Path
 
 
 def _check_no_symlink_inside_root(root_resolved, raw):
-    candidate = Path(os.path.normpath(str(root_resolved / raw)))
-    root_norm = os.path.normcase(str(root_resolved))
-    current = candidate
-    while True:
-        if os.path.normcase(str(current)) == root_norm:
+    """Reject symlinked path components before resolving or collapsing ``..``.
+
+    Checking unresolved components in order is important: a lexical
+    ``normpath`` collapses ``linkdir/..`` before the symlink check, which would
+    let a path traverse an intra-root directory symlink without noticing it.
+    """
+    root = Path(root_resolved)
+    raw_path = Path(raw)
+
+    if raw_path.is_absolute() or raw_path.drive:
+        try:
+            raw_path = raw_path.relative_to(root)
+        except ValueError:
+            # project_path() rejects paths outside the project root.
             return
+
+    current = root
+    for part in raw_path.parts:
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if current != root:
+                current = current.parent
+            continue
+        current = current / part
         if current.is_symlink():
             raise ValueError(f"Output path cannot traverse or target a symlink: {current}")
-        parent = current.parent
-        if parent == current:
-            return
-        current = parent
 
 
 def output_path(root, name, extensions, overwrite=False, create_parent=True):

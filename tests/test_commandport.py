@@ -16,8 +16,8 @@ from unittest.mock import patch
 
 from maya_mcp.client import BridgeError
 from maya_mcp.commandport import (BEGIN, END, REPO_ROOT, REQUEST_LIMIT,
-                                  CommandPortClient, build_request, dispatch,
-                                  parse_reply)
+                                  CommandPortClient, _resolve_root, build_request,
+                                  dispatch, parse_reply)
 from maya_mcp.config import Settings
 
 
@@ -282,6 +282,19 @@ class CommandPortTests(unittest.TestCase):
                 })))
                 self.assertTrue(allowed["ok"])
                 self.assertEqual(allowed["data"], {"results": [False]})
+
+    def test_resolve_root_requires_maya_pin_for_non_cwd_roots(self):
+        with tempfile.TemporaryDirectory() as other:
+            clean_env = {k: v for k, v in os.environ.items()
+                         if k != "MAYA_MCP_PROJECT_ROOT"}
+            with patch.dict(os.environ, clean_env, clear=True):
+                with self.assertRaisesRegex(ValueError, "MAYA_MCP_PROJECT_ROOT"):
+                    _resolve_root({"root": str(Path(other).resolve())})
+                self.assertEqual(
+                    _resolve_root({"root": str(Path.cwd().resolve())}),
+                    Path.cwd().resolve(),
+                )
+                self.assertEqual(_resolve_root({}), Path.cwd().resolve())
 
     def test_client_rejects_empty_token_and_bad_port(self):
         with self.assertRaisesRegex(ValueError, "MAYA_MCP_TOKEN"):

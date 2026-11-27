@@ -169,11 +169,18 @@ def _resolve_root(request: dict) -> Path:
             if Path(req_root).resolve() != configured:
                 raise ValueError("Requested project root does not match Maya's MAYA_MCP_PROJECT_ROOT")
         return configured
+    # Do not let an authenticated request choose an arbitrary project root.
+    # Without an explicit Maya-side pin, only Maya's own cwd is allowed.
+    cwd = Path.cwd().resolve()
     if req_root is not None:
         if not isinstance(req_root, str) or not req_root:
             raise ValueError("Invalid project root")
-        return Path(req_root).resolve()
-    return Path.cwd().resolve()
+        if Path(req_root).resolve() != cwd:
+            raise ValueError(
+                "MAYA_MCP_PROJECT_ROOT must be set in Maya's environment when "
+                "requesting a project root other than Maya's cwd"
+            )
+    return cwd
 
 
 def dispatch(request_b64: str) -> str:

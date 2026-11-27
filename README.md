@@ -115,7 +115,7 @@ start_gui()
 
 ### 3. commandPort 模式
 
-在 Maya Script Editor（Python 标签页）中设置与宿主一致的 `MAYA_MCP_TOKEN`（推荐同时设置 `MAYA_MCP_PROJECT_ROOT`），并打开一个启用 `echoOutput=True` 的 Python `commandPort`：
+在 Maya Script Editor（Python 标签页）中设置与宿主一致的 `MAYA_MCP_TOKEN`，**必须设置** `MAYA_MCP_PROJECT_ROOT`（除非请求的项目根目录与 Maya 当前工作目录完全一致），并打开一个启用 `echoOutput=True` 的 Python `commandPort`：
 
 ```python
 import os

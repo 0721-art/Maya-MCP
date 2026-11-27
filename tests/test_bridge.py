@@ -164,6 +164,8 @@ class BridgeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "symlink"):
                     output_path(root, "linkdir/out.png", {".png"}, overwrite=True)
                 with self.assertRaisesRegex(ValueError, "symlink"):
+                    output_path(root, "linkdir/../out.png", {".png"}, overwrite=True)
+                with self.assertRaisesRegex(ValueError, "symlink"):
                     output_path(root, "real/../link.png", {".png"}, overwrite=True)
             else:
                 # Fallback when Windows lacks symlink privilege: verify symlink check runs before resolve()
@@ -178,6 +180,8 @@ class BridgeTests(unittest.TestCase):
                         output_path(root, "link.png", {".png"}, overwrite=True)
                     with self.assertRaisesRegex(ValueError, "symlink"):
                         output_path(root, "linkdir/out.png", {".png"}, overwrite=True)
+                    with self.assertRaisesRegex(ValueError, "symlink"):
+                        output_path(root, "linkdir/../out.png", {".png"}, overwrite=True)
 
     def test_handlers_do_not_create_output_dirs_when_validation_fails(self):
         class FakeCmds:
