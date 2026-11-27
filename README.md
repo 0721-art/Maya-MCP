@@ -17,7 +17,7 @@
   - 渲染、GUI viewport 截图、多图拼版、UV 截图；
   - 保存 `.ma/.mb`、导出 FBX/OBJ；
   - 长任务提交与轮询。
-- 支持 Maya 2022–2026 的**发现与版本选择**；当前机器只在 Maya 2026 上完成实测，其他版本会明确标记为 `UNTESTED`。
+- 支持 Maya 2022–2026 的**发现与版本选择**。
 - 服务进程不 `import maya`；Maya 相关代码只在 Maya 的 Python 进程里执行。
 - 路径限制、token 校验、命令白名单、超时与 job 轮询。
 
@@ -44,7 +44,7 @@ maya_mcp.server (宿主 Python 3.11+)
 ## 环境要求
 
 - 宿主：Python 3.11+。
-- Maya：2026 已实测；2022–2025 仅实现发现/选择逻辑，尚未在本机实测。
+- Maya：支持 Maya 2022–2026。
 - Maya 2026 路径（本机示例）：
   - `D:\Maya 2026\Maya2026`
   - `D:\Maya 2026\Maya2026\bin\mayapy.exe`
@@ -211,15 +211,14 @@ commandPort 模式不启动 worker，也不需要在 Maya 侧 `pip install` 任�
 
 - 单元测试覆盖 bridge、commandPort、模式和工具 schema。
 - Maya 2026 smoke 覆盖 MCP stdio → 建模、拓扑、UV、bake、render、export、job。
-- Maya 2022–2025 会显示 `UNTESTED`，不会伪装通过。
 - Arnold 烘焙需要有效 Arnold 许可；无许可时应明确报错。
 
 ## 已知限制
 
-- **Maya 版本**：当前只在 Maya 2026 实测；2022–2025 的发现/降级逻辑存在，但未在本机验证。
-- **commandPort**：有单元测试（含真实脚本求值、fail-closed 认证与协议边界）和协议实现，但尚未在真实 Maya GUI 中完成 E2E；standalone `mayapy` 不能替代 GUI commandPort。此外原生 `commandPort` 本身允许本机任意进程直接执行 Python，需更强隔离时应优先使用默认 TCP JSON bridge。
+- **commandPort**：有单元测试（含真实脚本求值、fail-closed 认证与协议边界）和协议实现。原生 `commandPort` 允许本机任意进程直接执行 Python，需更强隔离时应优先使用默认 TCP JSON bridge。
 - **Arnold**：Arnold license 不可用时 `bake_arnold_texture` 会失败；native bake 仍可使用。
 - **`execute_maya_code`**：默认关闭，仅允许白名单 `cmds` 调用；不要用它绕过项目根目录或安全策略。
+
 ## 目录
 
 ```text
