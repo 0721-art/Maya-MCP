@@ -2,19 +2,9 @@
 
 一个通用的 Autodesk Maya MCP stdio 服务：让 Agent 在真实 Maya 会话或 `mayapy` headless 进程中完成建模、拓扑、UV、烘焙、渲染、截图和导出。
 
-Maya MCP 不内置作业模板、固定题目或特定交付流程。课程作业只是它最常见的使用场景；题目、命名、参考图和验收标准由外部 Agent/客户端组织。
+## 实现
 
-## 设计来源
-
-参考了 [mcp-for-blender](https://github.com/ahujasid/mcp-for-blender) 的“MCP server + DCC 内桥接”思路，并调研了这些 Maya MCP 项目：
-
-- [PatrickPalmer/MayaMCP](https://github.com/PatrickPalmer/MayaMCP)：Maya `commandPort`、Maya 侧动态工具、低层 MCP。
-- [Xxx91n/mcp-for-maya](https://github.com/Xxx91n/mcp-for-maya)：`commandPort`、自动发现端口、多 Maya 实例、场景/相机/资产工具。
-- [GimbalGoats/GG_MayaMCP](https://github.com/GimbalGoats/GG_MayaMCP)：`commandPort`、大量类型化工具、Maya 2024+。
-- [dcc-mcp/dcc-mcp-maya](https://github.com/dcc-mcp/dcc-mcp-maya)：可发现工具、UV/烘焙专题、Maya 2022/Python 3.7 兼容提示。
-- [chadrik/maya-mcp-server](https://github.com/chadrik/maya-mcp-server)：`commandPort`、多会话资源。
-
-本仓库没有复制这些项目的代码。当前实现支持两种传输：默认的**本地回环 TCP + token 的 JSON 桥接**，以及 Maya 原生 `commandPort`（`MAYA_MCP_MODE=commandport`）；同时支持 Maya GUI 和 `mayapy` headless。commandPort 模式不需要在 Maya 侧安装 Python 包。更多对比见 [Maya 参考调研](docs/MAYA_REFERENCES.md)。
+当前实现支持两种传输：默认的**本地回环 TCP + token 的 JSON 桥接**，以及 Maya 原生 `commandPort`（`MAYA_MCP_MODE=commandport`）；同时支持 Maya GUI 和 `mayapy` headless。commandPort 模式不需要在 Maya 侧安装 Python 包。
 
 ## 特性
 
@@ -210,8 +200,6 @@ commandPort 模式不启动 worker，也不需要在 Maya 侧 `pip install` 任�
 4. `export_scene` 导出 FBX/OBJ。
 5. 用 `render_view` 生成最终检查图。
 
-课程作业只是上述流程的一个使用场景：题目、命名、截图视角和提交格式应由调用方提供，不应写进 MCP 核心代码。
-
 ## 测试
 
 ```powershell
@@ -232,8 +220,6 @@ commandPort 模式不启动 worker，也不需要在 Maya 侧 `pip install` 任�
 - **commandPort**：有单元测试（含真实脚本求值、fail-closed 认证与协议边界）和协议实现，但尚未在真实 Maya GUI 中完成 E2E；standalone `mayapy` 不能替代 GUI commandPort。此外原生 `commandPort` 本身允许本机任意进程直接执行 Python，需更强隔离时应优先使用默认 TCP JSON bridge。
 - **Arnold**：Arnold license 不可用时 `bake_arnold_texture` 会失败；native bake 仍可使用。
 - **`execute_maya_code`**：默认关闭，仅允许白名单 `cmds` 调用；不要用它绕过项目根目录或安全策略。
-- **作业交付物**：本仓库不生成特定课程的模型、截图或报告；这些由 Agent 按用户提供的题目和资产完成。
-
 ## 目录
 
 ```text
@@ -266,7 +252,6 @@ tests/
   maya_smoke.py         end-to-end MCP stdio smoke against real Maya (--year)
 docs/
   REQUIREMENTS.md       product scope and acceptance criteria
-  MAYA_REFERENCES.md    survey of Maya MCP designs and tradeoffs
 ```
 
 ## 许可
